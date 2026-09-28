@@ -1,0 +1,10 @@
+.git
+.next
+node_modules
+.env*
+coverage
+*.log
+*.tsbuildinfo
+README.md
+AGENTS.md
+CLAUDE.md

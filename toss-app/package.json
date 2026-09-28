@@ -1,0 +1,26 @@
+{
+  "name": "shate-toss-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "ait:build": "ait build"
+  },
+  "dependencies": {
+    "@apps-in-toss/web-framework": "3.0.5",
+    "@supabase/supabase-js": "^2.107.0",
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "^1.38.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19"
+  }
+}
