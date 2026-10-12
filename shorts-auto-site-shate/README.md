@@ -94,4 +94,3 @@ Storage bucket은 최소 아래 이름을 사용합니다.
 ```dotenv
 FFMPEG_PATH=C:\ffmpeg\bin\ffmpeg.exe
 ```
-
