@@ -50,11 +50,6 @@ SUPABASE_SERVICE_ROLE_KEY=
 FFMPEG_PATH=
 ```
 
-주의:
-
-- `.env.local`은 GitHub에 올리면 안 됩니다.
-- 현재 `.gitignore`에서 `.env*`를 제외하고 있습니다.
-
 ## Supabase 설정
 
 Supabase SQL Editor에서 `supabase/` 폴더의 SQL을 적용합니다.
@@ -85,7 +80,6 @@ Storage bucket은 최소 아래 이름을 사용합니다.
 2. `.env.local` 또는 배포 환경변수에 `ADMIN_EMAILS`를 설정합니다.
    - 여러 명이면 쉼표로 구분합니다.
 3. `SUPABASE_SERVICE_ROLE_KEY`를 서버 환경변수로 설정합니다.
-   - 이 값은 절대 브라우저/클라이언트에 노출하면 안 됩니다.
 4. Supabase SQL Editor에서 `supabase/admin_user_plans.sql`을 실행합니다.
 
 관리자는 `/admin`에서 사용자 계정 삭제와 플랜 변경을 할 수 있습니다.
@@ -101,44 +95,3 @@ Storage bucket은 최소 아래 이름을 사용합니다.
 FFMPEG_PATH=C:\ffmpeg\bin\ffmpeg.exe
 ```
 
-## 검증 명령
-
-작업 후 아래 명령을 실행합니다.
-
-```bash
-npm run lint
-npm run build
-```
-
-## Git/GitHub
-
-현재 저장소는 GitHub `main` 브랜치와 연결되어 있습니다.
-
-자주 쓰는 명령:
-
-```bash
-git status
-git add .
-git commit -m "작업 내용"
-git push
-```
-
-## 배포 전 확인
-
-- 배포 환경에 `NEXT_PUBLIC_SUPABASE_URL` 설정
-- 배포 환경에 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 설정
-- 배포 환경에 `OPENAI_API_KEY` 설정
-- 배포 환경에서 FFmpeg 사용 가능 여부 확인
-- Supabase SQL 적용 여부 확인
-- Storage bucket 정책 확인
-
-## 주의할 파일
-
-GitHub에 올리면 안 되는 항목:
-
-- `.env.local`
-- `.env`
-- `.next/`
-- `node_modules/`
-- `supabase/.temp/`
-- 로그 파일
