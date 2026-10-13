@@ -3,6 +3,7 @@ import time
 import queue
 import math
 import threading
+import random
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -13,6 +14,48 @@ from PIL import Image
 
 
 class MouseTests(unittest.TestCase):
+    def test_circles_after_long_pointer_travel_keep_two_turn_detection(self):
+        for steps in (100,120,180,240,360):
+            for direction in (-1,1):
+                with self.subTest(steps=steps,direction=direction):
+                    gate = CircleGate()
+                    for i in range(400):
+                        gate.observe((-1000+i,300),7,i*.008)
+                    hits=[]
+                    for i in range(steps+1):
+                        angle=direction*i/steps*4*math.pi
+                        hits.append(gate.observe((300+70*math.cos(angle),300+70*math.sin(angle)),7,(400+i)*.008))
+                    self.assertTrue(any(hits))
+
+    def test_ordinary_pointer_wander_does_not_trigger_or_grow_history(self):
+        gate=CircleGate()
+        generator=random.Random(91)
+        x=y=300.0
+        for i in range(3000):
+            x+=generator.uniform(-8,8)
+            y+=generator.uniform(-8,8)
+            self.assertFalse(gate.observe((x,y),7,i*.008))
+        self.assertLessEqual(len(gate.points),400)
+
+    def test_high_rate_hook_sampling_keeps_every_drag_movement(self):
+        watcher=MouseWatcher.__new__(MouseWatcher)
+        watcher.gate=ClickGate()
+        watcher.circle_enabled=True
+        watcher.last_hook_move=float('-inf')
+        accepted=sum(watcher.accept_move(i/8000) for i in range(8000))
+        self.assertLessEqual(accepted,125)
+        self.assertGreater(accepted,115)
+        watcher.gate.observe('down',(100,100),7,1)
+        self.assertTrue(all(watcher.accept_move(1+i/8000) for i in range(1000)))
+        for point in ((109,100),(100,100)):
+            now=watcher.last_hook_move+.00001
+            self.assertTrue(watcher.accept_move(now))
+            watcher.gate.observe('move',point,7,now)
+            # Once a drag has been rejected, sampling may resume.
+            if watcher.gate.pressed is None:
+                break
+        self.assertFalse(watcher.gate.observe('up',(100,100),7,1.01))
+
     def test_imperfect_fast_small_slow_and_drifting_circles(self):
         cases = [('fast',70,70,.6,0,36),('small',22,22,2,0,100),
                  ('ellipse',100,24,3,0,100),('slow',70,70,6,0,120),

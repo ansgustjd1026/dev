@@ -6,6 +6,7 @@ import threading
 import time
 import math
 import queue
+from bisect import bisect_left
 from collections import deque
 
 
@@ -92,28 +93,67 @@ class CircleGate:
             return False
         self.last_check = now
         points = list(self.points)
+        # Bounds and tangent bends do not depend on a window's center. Cache
+        # suffix results once, retaining every original candidate window.
+        bounds = [None] * len(points)
+        left = right = points[-1][0]
+        top = bottom = points[-1][1]
+        for i in range(len(points)-1, -1, -1):
+            x,y,_ = points[i]
+            left,right = min(left,x),max(right,x)
+            top,bottom = min(top,y),max(bottom,y)
+            bounds[i] = (left,top,right,bottom)
+        smooth = [((a[0]+b[0]+c[0])/3, (a[1]+b[1]+c[1])/3)
+                  for a,b,c in zip(points,points[1:],points[2:])]
+        heading_positions, headings = [], []
+        for i,(a,b) in enumerate(zip(smooth,smooth[1:])):
+            if math.dist(a,b) >= 1:
+                heading_positions.append(i)
+                headings.append(math.atan2(b[1]-a[1],b[0]-a[0]))
+        bends = [(b-a+math.pi)%(2*math.pi)-math.pi for a,b in zip(headings,headings[1:])]
+        bend_totals = [0.0] * (len(bends)+1)
+        bend_travels = [0.0] * (len(bends)+1)
+        bend_maxima = [0.0] * (len(bends)+1)
+        for i in range(len(bends)-1,-1,-1):
+            bend_totals[i] = bends[i] + bend_totals[i+1]
+            bend_travels[i] = abs(bends[i]) + bend_travels[i+1]
+            bend_maxima[i] = max(abs(bends[i]),bend_maxima[i+1])
         for length in list(range(12,len(points),8)) + [len(points)]:
-            curve = points[-length:]
-            xs,ys = [p[0] for p in curve], [p[1] for p in curve]
-            width,height = max(xs)-min(xs), max(ys)-min(ys)
+            start = len(points)-length
+            left,top,right,bottom = bounds[start]
+            width,height = right-left,bottom-top
             if not (35 <= width <= 1000 and 35 <= height <= 1000 and .25 <= width/height <= 4.5):
                 continue
-            cx,cy = (max(xs)+min(xs))/2, (max(ys)+min(ys))/2
-            normalized = [((x-cx)/(width/2), (y-cy)/(height/2)) for x,y,_ in curve]
+            cx,cy = (right+left)/2,(bottom+top)/2
+            dx,dy = width/2,height/2
+            normalized = [((x-cx)/dx, (y-cy)/dy) for x,y,_ in points[start:]]
             if sum(.25 <= math.hypot(x,y) <= 1.7 for x,y in normalized) < .75*length:
                 continue
-            angles = [math.atan2(y,x) for x,y in normalized]
-            turns = [(b-a+math.pi)%(2*math.pi)-math.pi for a,b in zip(angles,angles[1:])]
-            total,travel = sum(turns), sum(abs(v) for v in turns)
-            radial = travel > 0 and max(abs(v) for v in turns) <= 1.7 and abs(total) >= 3.7*math.pi and abs(total)/travel >= .7
-            # Tangent rotation also recognizes loops whose center drifts. Smooth
-            # neighboring positions first so tiny hand jitter is not a turn.
-            smooth = [(sum(p[0] for p in curve[i:i+3])/3, sum(p[1] for p in curve[i:i+3])/3) for i in range(length-2)]
-            headings = [math.atan2(b[1]-a[1],b[0]-a[0]) for a,b in zip(smooth,smooth[1:]) if math.dist(a,b) >= 1]
-            bends = [(b-a+math.pi)%(2*math.pi)-math.pi for a,b in zip(headings,headings[1:])]
-            bend_total,bend_travel = sum(bends),sum(abs(v) for v in bends)
-            tangent = bend_travel > 0 and max(abs(v) for v in bends) <= 1.7 and abs(bend_total) >= 3.7*math.pi and abs(bend_total)/bend_travel >= .7
-            if radial or tangent:
+            first_heading = bisect_left(heading_positions,start)
+            tangent = False
+            if first_heading < len(bends):
+                bend_total,bend_travel = bend_totals[first_heading],bend_travels[first_heading]
+                tangent = (bend_travel > 0 and bend_maxima[first_heading] <= 1.7
+                           and abs(bend_total) >= 3.7*math.pi and abs(bend_total)/bend_travel >= .7)
+            if tangent:
+                self.reset()
+                self.cooldown_until = now + 2
+                return True
+            total = travel = 0.0
+            previous = None
+            radial = False
+            for x,y in normalized:
+                angle = math.atan2(y,x)
+                if previous is not None:
+                    turn = (angle-previous+math.pi)%(2*math.pi)-math.pi
+                    if abs(turn) > 1.7:
+                        break  # The original maximum-turn test already fails.
+                    total += turn
+                    travel += abs(turn)
+                previous = angle
+            else:
+                radial = travel > 0 and abs(total) >= 3.7*math.pi and abs(total)/travel >= .7
+            if radial:
                 self.reset()
                 self.cooldown_until = now + 2
                 return True
@@ -136,6 +176,7 @@ class MouseWatcher:
         self.thread_id = 0
         self.circle_moves = queue.Queue(maxsize=64)
         self.last_queued_move = float('-inf')
+        self.last_hook_move = float('-inf')
         self.circle_thread = threading.Thread(target=self.run_circles, daemon=True)
         self.circle_thread.start()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -157,6 +198,15 @@ class MouseWatcher:
             return (max(0, self.gate.suppress_until-now) if self.enabled else 0,
                     self.gate.serial,
                     self.enabled and now-self.gate.last_trigger < self.gate.interval + .2)
+
+    def accept_move(self, now):
+        # Sample before window/PID queries. Drag tracking keeps every movement
+        # so moving away and back cannot become an accidental click.
+        if not self.gate.pressed:
+            if not self.circle_enabled or now - self.last_hook_move < .008:
+                return False
+        self.last_hook_move = now
+        return True
 
     def queue_circle(self, point, window, now, buttons):
         if not self.circle_enabled:
@@ -229,7 +279,8 @@ class MouseWatcher:
                     data = C.cast(pointer, C.POINTER(MouseData)).contents
                     if not data.flags & 1:
                         kind = {0x200:'move', 0x201:'down', 0x202:'up'}[message]
-                        if kind == 'move' and not self.gate.pressed and not self.circle_enabled:
+                        now = time.monotonic()
+                        if kind == 'move' and not self.accept_move(now):
                             return user.CallNextHookEx(hook, code, message, pointer)
                         hwnd = user.GetAncestor(user.WindowFromPoint(data.pt), 2)
                         pid = W.DWORD()
@@ -239,7 +290,6 @@ class MouseWatcher:
                                 self.gate.reset()
                                 self.queue_circle((data.pt.x, data.pt.y), hwnd, time.monotonic(), True)
                             else:
-                                now = time.monotonic()
                                 point = (data.pt.x, data.pt.y)
                                 if kind == 'down':
                                     self.queue_circle(point, hwnd, now, True)
