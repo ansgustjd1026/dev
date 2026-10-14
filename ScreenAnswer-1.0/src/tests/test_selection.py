@@ -91,6 +91,39 @@ class SelectionTests(unittest.TestCase):
         focused.GetParentControl.return_value = foreground
         self.assertEqual(selected_text(auto, own_pid=111), (7, '선택한 문제'))
 
+    def test_pdf_document_selection_wins_over_a_focused_text_fragment(self):
+        auto, focused = self.provider(text='e')
+        auto.GetForegroundControl.return_value.IsPassword = False
+        document = Mock(ProcessId=222, NativeWindowHandle=0, IsPassword=False,
+                        ControlTypeName='DocumentControl')
+        document.GetParentControl.return_value = auto.GetForegroundControl.return_value
+        focused.GetParentControl.return_value = document
+        selected = Mock()
+        selected.GetText.return_value = 'Knowledge distillation transfers knowledge from a larger model.'
+        selected.CompareEndpoints.return_value = -1
+        document.GetPattern.return_value.GetSelection.return_value = [selected]
+        self.assertEqual(selected_text(auto, own_pid=111),
+                         (7, 'Knowledge distillation transfers knowledge from a larger model.'))
+        focused.GetPattern.assert_not_called()
+        document.GetPattern.return_value.DocumentRange.GetText.assert_not_called()
+
+    def test_collapsed_pdf_caret_does_not_send_an_unselected_character(self):
+        auto, focused = self.provider(text='e')
+        selected = focused.GetPattern.return_value.GetSelection.return_value[0]
+        selected.CompareEndpoints.return_value = 0
+        self.assertIsNone(selected_text(auto, own_pid=111))
+        selected.GetText.assert_not_called()
+
+    def test_document_without_selection_falls_back_to_real_child_selection(self):
+        auto, focused = self.provider(text='transfers')
+        auto.GetForegroundControl.return_value.IsPassword = False
+        document = Mock(ProcessId=222, NativeWindowHandle=0, IsPassword=False,
+                        ControlTypeName='DocumentControl')
+        document.GetParentControl.return_value = auto.GetForegroundControl.return_value
+        document.GetPattern.return_value.GetSelection.return_value = []
+        focused.GetParentControl.return_value = document
+        self.assertEqual(selected_text(auto, own_pid=111), (7, 'transfers'))
+
     def test_baseline_drag_debounce_and_duplicate(self):
         gate = SelectionGate()
         a, b = (10, 'old selection'), (10, 'new problem')

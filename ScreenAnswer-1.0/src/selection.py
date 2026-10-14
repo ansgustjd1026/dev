@@ -85,7 +85,16 @@ def selected_text(auto, own_pid=None, with_position=False):
         attached = any(c.NativeWindowHandle == hwnd for c in controls)
         if not attached and (require_window or controls[0].ProcessId != source_pid):
             return None
+        # PDF text leaves can expose a local caret or fragment while the enclosing
+        # Document exposes the complete selection. Prefer that document provider.
+        documents, others = [], []
         for control in controls:
+            try:
+                is_document = control.ControlTypeName == 'DocumentControl'
+            except Exception:
+                is_document = False
+            (documents if is_document else others).append(control)
+        for control in documents + others:
             try:
                 pattern = control.GetPattern(auto.PatternId.TextPattern)
                 if not pattern:
@@ -99,6 +108,13 @@ def selected_text(auto, own_pid=None, with_position=False):
             try:
                 chunks, size = [], 0
                 for selected in ranges:
+                    try:
+                        # A collapsed caret is not selected text, even when a
+                        # provider's GetText returns the character beneath it.
+                        if selected.CompareEndpoints(0, selected, 1) == 0:
+                            continue
+                    except Exception:
+                        pass  # Some providers do not implement endpoint comparison.
                     chunk = selected.GetText(50001 - size)
                     chunks.append(chunk)
                     size += len(chunk) + (1 if len(chunks) > 1 else 0)
