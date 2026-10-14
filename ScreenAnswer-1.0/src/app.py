@@ -116,6 +116,7 @@ class App:
         self.tray = HomeTrayIcon('ScreenAnswer', make_icon('#72d7f3'), 'ScreenAnswer · ' + self.settings['hotkey'],
             pystray.Menu(
                 pystray.MenuItem('설정', lambda: self.events.put(('settings', None))),
+                pystray.MenuItem('최근 원문과 답변', lambda: self.events.put(('result', None))),
                 pystray.MenuItem('종료', lambda: self.events.put(('quit', None)))),
                 home_action=lambda: self.events.put(('settings', None)))
         threading.Thread(target=self.tray.run, daemon=True).start()
@@ -401,6 +402,9 @@ class App:
         self.submit(key, jpeg=jpeg)
 
     def submit(self, key, jpeg=None, text=None):
+        self.request_source = validate_text(text) if text is not None else None
+        text = self.request_source
+        self.result_text = 'AI 응답을 기다리는 중입니다.'
         self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None else '화면') + '의 AI 응답을 기다리는 중…'
         settings = self.settings.copy()
         inputs = [jpeg]
@@ -554,8 +558,8 @@ class App:
         check(tray_display, 'tray_icon_changes', '처리 상태에 따라 아이콘 색상 변경')
         hint(tray_display, '끄면 기본 색상으로 고정됩니다.')
         result_box = tray_display
-        subheading(result_box, '최근 답변')
-        ttk.Button(result_box, text='최근 답변 전체 보기', command=self.open_result).grid(column=0, columnspan=2, sticky='w', pady=6)
+        subheading(result_box, '최근 원문과 답변')
+        ttk.Button(result_box, text='전송한 원문과 답변 확인', command=self.open_result).grid(column=0, columnspan=2, sticky='w', pady=6)
         circle_box = capture
         subheading(capture, '원 그리기로 캡처')
         circle_enabled = check(circle_box, 'mouse_circle_enabled', '커서로 원 두 바퀴 → 화면 전송')
@@ -781,19 +785,42 @@ class App:
             dialog.lift()
             return
         dialog = self.result_dialog = tk.Toplevel(self.root)
-        dialog.title('ScreenAnswer · 최근 답변')
+        dialog.title('ScreenAnswer · 최근 원문과 답변')
         dialog.geometry('620x420')
         dialog.minsize(360, 240)
-        body = ttk.Frame(dialog, padding=16)
-        body.pack(fill='both', expand=True)
-        scrollbar = ttk.Scrollbar(body)
-        scrollbar.pack(side='right', fill='y')
-        text = tk.Text(body, wrap='word', font=('Malgun Gothic', 11),
-                       yscrollcommand=scrollbar.set, padx=10, pady=10)
-        text.pack(fill='both', expand=True)
-        scrollbar.configure(command=text.yview)
-        text.insert('1.0', getattr(self, 'result_text', '아직 AI 응답이 없습니다.'))
-        text.configure(state='disabled')
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill='both', expand=True, padx=16, pady=16)
+        views = []
+        for title in ('답변', '전송 원문'):
+            body = ttk.Frame(notebook)
+            notebook.add(body, text=title)
+            scrollbar = ttk.Scrollbar(body)
+            scrollbar.pack(side='right', fill='y')
+            text = tk.Text(body, wrap='word', font=('Malgun Gothic', 11),
+                           yscrollcommand=scrollbar.set, padx=10, pady=10)
+            text.pack(fill='both', expand=True)
+            scrollbar.configure(command=text.yview)
+            views.append(text)
+        displayed = [None, None]
+        refresh_job = [None]
+        def refresh():
+            if not dialog.winfo_exists():
+                return
+            values = (getattr(self, 'result_text', '아직 AI 응답이 없습니다.'),
+                      getattr(self, 'request_source', None) or '전송한 텍스트가 없습니다. 화면 요청은 이미지를 전송합니다.')
+            for index, value in enumerate(values):
+                if displayed[index] != value:
+                    views[index].configure(state='normal')
+                    views[index].delete('1.0', 'end')
+                    views[index].insert('1.0', value)
+                    views[index].configure(state='disabled')
+                    displayed[index] = value
+            refresh_job[0] = dialog.after(250, refresh)
+        def stop_refresh(event):
+            if event.widget == dialog and refresh_job[0] is not None:
+                dialog.after_cancel(refresh_job[0])
+        dialog.bind('<Destroy>', stop_refresh, add='+')
+        refresh()
         ttk.Button(dialog, text='닫기', command=dialog.destroy).pack(pady=(0, 12))
         dialog.bind('<Escape>', lambda _: dialog.destroy())
 

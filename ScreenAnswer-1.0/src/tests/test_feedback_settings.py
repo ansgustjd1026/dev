@@ -68,6 +68,23 @@ class FeedbackSettingsTests(unittest.TestCase):
             app.set_tray_color(app.tray_color)
             self.assertEqual(app.tray.icon, '#ffc86b')
 
+    def test_recent_original_matches_sent_text_and_clears_for_image_request(self):
+        app = App.__new__(App)
+        app.settings = DEFAULTS.copy()
+        app.tray = Mock()
+        app.events = queue.Queue()
+        source = 'Unfortunately, making predictions\nrequires evidence.'
+        with patch('app.ask', return_value={'answer': '번역', 'led_count': 1}) as ask, patch('app.threading.Thread') as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs['target']()
+            app.submit('test-key', text='  ' + source + '\n')
+            self.assertEqual(app.request_source, source)
+            self.assertEqual(ask.call_args.kwargs['text'], source)
+            self.assertTrue(payload(app.settings, text=app.request_source)['input'][0]['content'][-1]['text'].endswith(source))
+            self.assertEqual(app.result_text, 'AI 응답을 기다리는 중입니다.')
+            app.submit('test-key', jpeg=b'fake-image')
+            self.assertIsNone(app.request_source)
+            self.assertIsNone(ask.call_args.kwargs['text'])
+
 
 if __name__ == '__main__':
     unittest.main()
