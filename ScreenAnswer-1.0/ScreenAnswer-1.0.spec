@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+import uiautomation as auto
+
+# Generate the COM wrapper before analysis in a fresh build environment.
+with auto.UIAutomationInitializerInThread():
+    auto.GetRootControl()
 
 datas = []
 binaries = []
