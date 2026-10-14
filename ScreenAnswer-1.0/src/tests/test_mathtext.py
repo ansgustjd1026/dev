@@ -3,14 +3,14 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mathtext import readable_math
-from app import tooltip, answer_preview
+from app import tooltip
 
 
 class MathTextTests(unittest.TestCase):
     def test_reported_fraction_in_both_displays(self):
         source = r'② \( \frac{1}{4} \)'
         self.assertEqual(tooltip(source), '② 1/4')
-        self.assertEqual(answer_preview(source), '② 1/4')
+        self.assertEqual(readable_math(source), '② 1/4')
 
     def test_nested_fraction_preserves_order(self):
         self.assertEqual(readable_math(r'\frac{a+b}{\frac{c}{d}}'), '(a+b)/(c/d)')

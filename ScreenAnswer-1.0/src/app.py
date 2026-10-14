@@ -45,9 +45,9 @@ def payload(settings, jpeg=None, text=None):
     return api_client.payload(settings, jpeg, text=text, reference_loader=reference_inputs)
 
 
-def ask(settings, jpeg, key, text=None):
+def ask(settings, jpeg, key, text=None, on_progress=None):
     return api_client.ask(settings, jpeg, key, text=text,
-                          payload_builder=payload, error_logger=record_error)
+                          payload_builder=payload, error_logger=record_error, on_progress=on_progress)
 
 
 def tooltip(text):
@@ -74,13 +74,6 @@ def near_geometry(anchor, work, width, height):
         y = anchor[1] - height - 8
     return (max(left+8, min(x, right-width-8)),
             max(top+8, min(y, bottom-height-8)), width, height)
-
-def answer_preview(text):
-    text = readable_math(text)
-    first = next((line.strip() for line in text.splitlines() if line.strip()), '')
-    first = first.strip('*`')
-    return first[:180] + ('…' if len(first) > 180 else '')
-
 
 class HomeTrayIcon(pystray.Icon):
     """Open the settings home on a left click; preserve the right-click menu."""
@@ -145,9 +138,10 @@ class App:
         self.near_popup = None
         self.near_signature = None
 
-    def display_selection_answer(self, text):
+    def display_selection_answer(self, text, final=True):
         context = getattr(self, 'pending_selection', None)
-        self.pending_selection = None
+        if final:
+            self.pending_selection = None
         if not context or not self.settings['bubble_enabled'] or not self.selection.enabled.is_set() or (self.dialog and self.dialog.winfo_exists()):
             return
         generation, source, anchor, selected = context
@@ -156,7 +150,10 @@ class App:
         if generation != self.selection.generation or user.GetForegroundWindow() != source or not anchor or self.selection.current != (source, selected):
             return
         try:
-            self.show_near(text, anchor)
+            if not final and self.near_popup and self.near_popup.winfo_exists():
+                self.resize_near(text, anchor)
+            else:
+                self.show_near(text, anchor)
             self.near_signature = (generation, (source, selected))
         except Exception as error:
             record_error('bubble', error)
@@ -169,17 +166,46 @@ class App:
         window.overrideredirect(True)
         window.attributes('-alpha', 1 - self.settings.get('answer_transparency', 0) / 100)
         window.configure(bg='#f9f9f9', highlightbackground='#e4e4e4', highlightthickness=1)
-        preview = answer_preview(text)
-        tk.Label(window, text=preview, bg='#f9f9f9', fg='#202020',
-                 font=('Malgun Gothic', 10), wraplength=340, justify='left',
-                 padx=10, pady=6, takefocus=False).pack()
+        work = monitor_workarea(anchor)
+        canvas = tk.Canvas(window, bg='#f9f9f9', highlightthickness=0,
+                           borderwidth=0, takefocus=False)
+        canvas.pack(side='left', fill='both', expand=True)
+        label = tk.Label(canvas, text=readable_math(text), bg='#f9f9f9', fg='#202020',
+                         font=('Malgun Gothic', 10), wraplength=min(520, work[2]-work[0]-60),
+                         justify='left', padx=10, pady=6, takefocus=False)
+        canvas.create_window(0, 0, window=label, anchor='nw')
+        scrollbar = ttk.Scrollbar(window, orient='vertical', command=canvas.yview,
+                                  takefocus=False)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        window.answer_widgets = (canvas, label, scrollbar)
+        def scroll(event):
+            canvas.yview_scroll(-int(event.delta / 120) or (-1 if event.delta > 0 else 1), 'units')
+            return 'break'
+        for widget in (label, canvas, scrollbar):
+            widget.bind('<MouseWheel>', scroll)
+        self.resize_near(text, anchor)
+
+    def resize_near(self, text, anchor):
+        window = self.near_popup
+        canvas, label, scrollbar = window.answer_widgets
+        work = monitor_workarea(anchor)
+        label.configure(text=readable_math(text))
         window.update_idletasks()
-        x, y, width, height = near_geometry(anchor, monitor_workarea(anchor),
+        content_width, content_height = label.winfo_reqwidth(), label.winfo_reqheight()
+        canvas.configure(width=content_width, height=min(content_height, work[3]-work[1]-18),
+                         scrollregion=(0, 0, content_width, content_height))
+        if content_height > work[3]-work[1]-18:
+            scrollbar.pack(side='right', fill='y')
+        else:
+            scrollbar.pack_forget()
+        window.update_idletasks()
+        x, y, width, height = near_geometry(anchor, work,
             window.winfo_reqwidth(), window.winfo_reqheight())
         # Tk geometry interprets negative offsets relative to the right edge.
         # Position through Win32 instead to support monitors left of the primary.
-        window.geometry(f'{width}x{height}+30000+30000')
-        window.update_idletasks()
+        if not getattr(window, 'answer_shown', False):
+            window.geometry(f'{width}x{height}+30000+30000')
+            window.update_idletasks()
         user = C.windll.user32
         user.GetAncestor.argtypes = [W.HWND, W.UINT]
         user.GetAncestor.restype = W.HWND
@@ -192,6 +218,7 @@ class App:
         user.ShowWindow.argtypes = [W.HWND, C.c_int]
         user.ShowWindow(hwnd, 4)
         user.SetWindowPos(hwnd, W.HWND(-1), x, y, width, height, 0x10 | 0x40)
+        window.answer_shown = True
         # The bubble remains until the selection changes or is cleared.
 
     def selection_changed(self, state):
@@ -377,9 +404,19 @@ class App:
         self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None else '화면') + '의 AI 응답을 기다리는 중…'
         settings = self.settings.copy()
         inputs = [jpeg]
+        progress = self.translation_progress = queue.Queue(maxsize=1)
+        def update(answer):
+            try:
+                progress.get_nowait()
+            except queue.Empty:
+                pass
+            progress.put_nowait(answer)
         def worker():
             try:
-                result = ask(settings, inputs.pop(), key, text=text)
+                if text is not None and settings.get('task_preset') == '번역' and settings.get('bubble_enabled'):
+                    result = ask(settings, inputs.pop(), key, text=text, on_progress=update)
+                else:
+                    result = ask(settings, inputs.pop(), key, text=text)
                 self.events.put(('answer', result))
             except Exception as error:
                 record_error('request', error)
@@ -810,11 +847,23 @@ class App:
                     if not self.busy:
                         self.finish_binary(value, 'LED 테스트 · ' + str(value) + '번 (AI 호출 없음)')
                 elif event == 'answer':
+                    self.translation_progress = None
                     self.handle_answer(value)
                 elif event == 'error':
+                    self.translation_progress = None
                     self.handle_error(value)
         except queue.Empty:
-            pass
+            progress = getattr(self, 'translation_progress', None)
+            if progress is not None:
+                try:
+                    answer = progress.get_nowait()
+                except queue.Empty:
+                    pass
+                else:
+                    try:
+                        self.display_selection_answer(answer + '\n\n번역 중…', final=False)
+                    except Exception as error:
+                        record_error('bubble', error)
         except Exception as error:
             record_error('event', error)
             # A failed tray update or dialog must not stop all input handling.

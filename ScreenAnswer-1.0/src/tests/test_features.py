@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import App, DEFAULTS, Hotkey, near_geometry, load_settings, answer_preview, parse_transparency
+from app import App, DEFAULTS, Hotkey, near_geometry, load_settings, parse_transparency
 from selection import selected_text, SelectionWatcher
 
 
@@ -135,9 +135,34 @@ class FeatureTests(unittest.TestCase):
             app.display_selection_answer('late answer')
         app.show_near.assert_not_called()
 
-    def test_compact_preview(self):
-        self.assertEqual(answer_preview('\n**F**\nExplanation'), 'F')
-        self.assertLessEqual(len(answer_preview('x'*300)), 181)
+    def test_translation_progress_keeps_request_context_until_final_answer(self):
+        app = self.instance()
+        app.settings.update(task_preset='번역', bubble_enabled=True)
+        app.events = queue.Queue()
+        app.selection.current = (77, 'problem')
+        context = (4, 77, (10, 10, 100, 40), 'problem')
+        app.pending_selection = context
+        app.show_near = Mock()
+        app.busy = True
+        def translate(*args, on_progress, **kwargs):
+            for n in range(100):
+                on_progress(f'{n}번째 번역')
+            return {'answer': '전체 번역', 'led_count': 2}
+        with patch('app.ask', side_effect=translate), patch('app.threading.Thread') as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs['target']()
+            app.submit('test-key', text='problem')
+        self.assertEqual(app.translation_progress.qsize(), 1)
+        final_event = app.events.get_nowait()
+        with patch('app.C.windll.user32.GetForegroundWindow', return_value=77):
+            app.poll()
+            app.show_near.assert_called_once_with('99번째 번역\n\n번역 중…', context[2])
+            self.assertEqual(app.pending_selection, context)
+            self.assertTrue(app.busy)
+            app.handle_answer = Mock()
+            app.events.put(final_event)
+            app.poll()
+        app.handle_answer.assert_called_once_with({'answer': '전체 번역', 'led_count': 2})
+        self.assertIsNone(app.translation_progress)
 
     def test_watcher_monitors_deselection_while_api_is_busy(self):
         watcher = SelectionWatcher.__new__(SelectionWatcher)

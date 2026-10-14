@@ -7,6 +7,7 @@ from diagnostics import record_error
 from references import reference_inputs, validate_vector_store_id
 from request_body import encode_request
 from tasks import task_prompt, request_settings
+from streaming import stream_response
 from led_response import (FORMAT as LED_FORMAT, parse_result, control_instruction,
                           dedicated_mode, classification_instruction, classification_result)
 
@@ -68,17 +69,22 @@ def response_text(data):
         text += '\n\n[출력 제한으로 답변이 일부만 표시되었습니다.]'
     return text
 
-def ask(settings, jpeg, key, text=None, payload_builder=None, error_logger=None):
+def ask(settings, jpeg, key, text=None, payload_builder=None, error_logger=None, on_progress=None):
     build = payload if payload_builder is None else payload_builder
     log = record_error if error_logger is None else error_logger
+    body = build(settings, jpeg, text=text)
+    streaming = on_progress is not None and settings.get('task_preset') == '번역'
+    if streaming:
+        body['stream'] = True
     request = urllib.request.Request('https://api.openai.com/v1/responses',
-        data=encode_request(build(settings, jpeg, text=text)),
+        data=encode_request(body),
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}, method='POST')
     del jpeg  # The encoded request now owns the input; release raw JPEG bytes.
+    del body
     try:
         with urllib.request.urlopen(request, timeout=settings['timeout']) as response:
             request.data = None  # Upload finished; do not retain it while parsing the reply.
-            data = json.load(response)
+            data = stream_response(response, on_progress) if streaming else json.load(response)
             if data.get('status') not in (None,'completed'):
                 raise ValueError('AI 응답이 완료되지 않았습니다. 입력을 줄이거나 다시 시도하세요.')
             text=response_text(data)
