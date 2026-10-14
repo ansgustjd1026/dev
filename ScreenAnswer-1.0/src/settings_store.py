@@ -16,6 +16,7 @@ CONFIG = APP_DIR / 'settings.json'
 
 DEFAULTS = dict(settings_version=4, auto_selection=True, screen_enabled=True,
     bubble_enabled=False, tray_icon_changes=True, selection_delay_ms=1100, answer_transparency=0,
+    browser_selection_copy=True,
     mouse_circle_enabled=True, mouse_click_enabled=True, mouse_click_count=3, mouse_click_interval_ms=500,
     hotkey='Ctrl+Alt+Q', model='gpt-6.1-sol',
     prompt=PRESETS['자유 질문'], task_preset='자유 질문', advanced_prompt=False, extra_request='',

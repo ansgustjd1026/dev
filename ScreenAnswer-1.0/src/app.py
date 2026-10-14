@@ -22,6 +22,8 @@ from tasks import PRESETS, task_prompt, feedback as task_feedback, validate_feed
 from led_response import validate_result
 from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
+from result_panel import ResultPanel
+from browser_selection import Clipboard, copied_selection, is_browser
 
 import api_client
 import settings_store
@@ -242,9 +244,6 @@ class App:
             return None
         if self.dialog and self.dialog.winfo_exists():
             return None
-        result_dialog = getattr(self, 'result_dialog', None)
-        if result_dialog and result_dialog.winfo_exists():
-            return None
         try:
             key = os.environ.get('OPENAI_API_KEY', '').strip()
             if not key and self.settings['key']:
@@ -316,12 +315,15 @@ class App:
                 user.GetForegroundWindow() != sample[0]):
             return
         self.last_auto_selection = sample[:2]
-        self.pending_selection = (generation, sample[0], sample[2] if len(sample) > 2 else None, text)
+        self.pending_selection = (generation, sample[0], sample[2] if len(sample) > 2 else None, sample[1])
         self.hide_near()
         self.busy = True
         self.selection.suspended.set()
         self.set_tray_color('#ffc86b')
-        self.submit(key, text=text)
+        if self.settings.get('browser_selection_copy', True) and is_browser(sample[0]):
+            self.submit(key, text=text, copy_context=(generation, sample))
+        else:
+            self.submit(key, text=text)
 
     def toggle_selection(self):
         self.toggle_feature('auto_selection')
@@ -401,9 +403,12 @@ class App:
             return
         self.submit(key, jpeg=jpeg)
 
-    def submit(self, key, jpeg=None, text=None):
+    def submit(self, key, jpeg=None, text=None, copy_context=None):
         self.request_source = validate_text(text) if text is not None else None
         text = self.request_source
+        if copy_context:
+            self.request_source = None
+        clipboard_hwnd = self.root.winfo_id() if copy_context else None
         self.result_text = 'AI 응답을 기다리는 중입니다.'
         self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None else '화면') + '의 AI 응답을 기다리는 중…'
         settings = self.settings.copy()
@@ -417,10 +422,18 @@ class App:
             progress.put_nowait(answer)
         def worker():
             try:
-                if text is not None and settings.get('task_preset') == '번역' and settings.get('bubble_enabled'):
-                    result = ask(settings, inputs.pop(), key, text=text, on_progress=update)
+                request_text = text
+                if copy_context:
+                    generation, sample = copy_context
+                    def valid():
+                        return (self.selection.enabled.is_set() and generation == self.selection.generation and
+                                self.selection.current == sample[:2])
+                    request_text = validate_text(copied_selection(sample[0], Clipboard(clipboard_hwnd), valid))
+                    self.request_source = request_text
+                if request_text is not None and settings.get('task_preset') == '번역' and settings.get('bubble_enabled'):
+                    result = ask(settings, inputs.pop(), key, text=request_text, on_progress=update)
                 else:
-                    result = ask(settings, inputs.pop(), key, text=text)
+                    result = ask(settings, inputs.pop(), key, text=request_text)
                 self.events.put(('answer', result))
             except Exception as error:
                 record_error('request', error)
@@ -455,8 +468,20 @@ class App:
         ttk.Label(header, text='설정할 기능을 아래 탭에서 선택하세요.', style='Settings.Hint.TLabel').pack(anchor='w', pady=(4, 0))
         frame = ttk.Frame(dialog, padding=(24, 0, 24, 12))
         frame.pack(fill='both', expand=True)
-        tabs = ttk.Notebook(frame, style='Settings.TNotebook')
+        panes = ttk.Panedwindow(frame, orient='horizontal')
+        panes.pack(fill='both', expand=True)
+        settings_body = ttk.Frame(panes)
+        tabs = ttk.Notebook(settings_body, style='Settings.TNotebook')
         tabs.pack(fill='both', expand=True)
+        panes.add(settings_body, weight=3)
+        self.result_panel = ResultPanel(panes, self)
+        panes.add(self.result_panel, weight=2)
+        positioned = [False]
+        def position_panes(event):
+            if not positioned[0] and event.width > 100:
+                positioned[0] = True
+                panes.sashpos(0, int(event.width * .58))
+        panes.bind('<Configure>', position_panes)
         # Each page scrolls on small screens / high DPI, keeping Save visible.
         def page(title):
             shell = ttk.Frame(tabs)
@@ -527,6 +552,8 @@ class App:
         check(selection, 'auto_selection', '선택한 문제 자동 전송')
         delay, delay_entry = spin(selection, 'selection_delay_ms', '버튼을 뗀 뒤 대기 (ms)', 0, 30000, 100)
         hint(selection, '1,000ms = 1초 · 선택을 유지하면 전송합니다.')
+        check(selection, 'browser_selection_copy', '브라우저·PDF 선택을 복사 경로로 정확히 읽기')
+        hint(selection, 'Edge·Chrome에서 선택한 내용만 잠시 복사해 읽고 기존 클립보드를 복원합니다.')
         selection_display = selection
         subheading(selection, '말풍선 표시')
         bubble = check(selection_display, 'bubble_enabled', '선택한 곳 근처에 말풍선 표시')
@@ -747,7 +774,7 @@ class App:
         dialog.update_idletasks()
         rect = W.RECT()
         C.windll.user32.SystemParametersInfoW(0x30, 0, C.byref(rect), 0)
-        width = min(max(560, int(360 * float(dialog.tk.call('tk', 'scaling'))), dialog.winfo_reqwidth()), rect.right - rect.left - 24)
+        width = min(max(1040, int(630 * float(dialog.tk.call('tk', 'scaling'))), dialog.winfo_reqwidth()), rect.right - rect.left - 24)
         height = min(max(720, int(440 * float(dialog.tk.call('tk', 'scaling')))), rect.bottom - rect.top - 64)
         dialog.geometry(f'{width}x{height}+{rect.left+(rect.right-rect.left-width)//2}+{rect.top+(rect.bottom-rect.top-height)//2}')
         dialog.deiconify()
@@ -780,49 +807,7 @@ class App:
         self.finish_binary(getattr(self, 'settings', {}).get('led_error_count', 3), self.result_text)
 
     def open_result(self):
-        dialog = getattr(self, 'result_dialog', None)
-        if dialog and dialog.winfo_exists():
-            dialog.lift()
-            return
-        dialog = self.result_dialog = tk.Toplevel(self.root)
-        dialog.title('ScreenAnswer · 최근 원문과 답변')
-        dialog.geometry('620x420')
-        dialog.minsize(360, 240)
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill='both', expand=True, padx=16, pady=16)
-        views = []
-        for title in ('답변', '전송 원문'):
-            body = ttk.Frame(notebook)
-            notebook.add(body, text=title)
-            scrollbar = ttk.Scrollbar(body)
-            scrollbar.pack(side='right', fill='y')
-            text = tk.Text(body, wrap='word', font=('Malgun Gothic', 11),
-                           yscrollcommand=scrollbar.set, padx=10, pady=10)
-            text.pack(fill='both', expand=True)
-            scrollbar.configure(command=text.yview)
-            views.append(text)
-        displayed = [None, None]
-        refresh_job = [None]
-        def refresh():
-            if not dialog.winfo_exists():
-                return
-            values = (getattr(self, 'result_text', '아직 AI 응답이 없습니다.'),
-                      getattr(self, 'request_source', None) or '전송한 텍스트가 없습니다. 화면 요청은 이미지를 전송합니다.')
-            for index, value in enumerate(values):
-                if displayed[index] != value:
-                    views[index].configure(state='normal')
-                    views[index].delete('1.0', 'end')
-                    views[index].insert('1.0', value)
-                    views[index].configure(state='disabled')
-                    displayed[index] = value
-            refresh_job[0] = dialog.after(250, refresh)
-        def stop_refresh(event):
-            if event.widget == dialog and refresh_job[0] is not None:
-                dialog.after_cancel(refresh_job[0])
-        dialog.bind('<Destroy>', stop_refresh, add='+')
-        refresh()
-        ttk.Button(dialog, text='닫기', command=dialog.destroy).pack(pady=(0, 12))
-        dialog.bind('<Escape>', lambda _: dialog.destroy())
+        self.open_settings()
 
     def finish_binary(self, count, label):
         self.hide_near()
