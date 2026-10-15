@@ -32,9 +32,9 @@ class MathTextTests(unittest.TestCase):
         for value in ('정답: 42', '가격 $5', 'OPENAI_API_KEY', 'C:\\Users\\aa010', '집합 {1, 2}', '2 + 3 = 5'):
             self.assertEqual(readable_math(value), value)
 
-    def test_tooltip_limits_after_conversion(self):
+    def test_tooltip_preserves_all_converted_fractions(self):
         result = tooltip(r'\(\frac{1}{4}\)' * 150)
-        self.assertLessEqual(len(result.encode('utf-16-le')), 252)
+        self.assertEqual(result, '1/4' * 150)
         self.assertNotIn('\\frac', result)
 
 

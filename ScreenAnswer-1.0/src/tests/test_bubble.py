@@ -4,7 +4,7 @@ import sys
 import tkinter as tk
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import App
@@ -20,6 +20,8 @@ class BubbleTests(unittest.TestCase):
         self.app.near_popup = None
 
     def tearDown(self):
+        if hasattr(self.app, 'tray'):
+            self.app.hide_tray_answer()
         self.app.hide_near()
         self.app.root.destroy()
 
@@ -66,6 +68,47 @@ class BubbleTests(unittest.TestCase):
         self.assertEqual(ctypes.windll.user32.GetForegroundWindow(), foreground)
         self.assertLessEqual(window.winfo_height(), 224)
         self.assertLessEqual(window.winfo_width(), 304)
+
+    def test_tray_hover_keeps_full_answer_and_scrolls_to_last_line(self):
+        text = '\n'.join(f'{n}번째 번역 문장: 원문을 끝까지 번역합니다.' for n in range(100))
+        self.app.tray = Mock(title='', hover_pending=True)
+        self.app.set_tray_color = Mock()
+        self.app.publish(text, '#7ce6a6')
+        self.assertEqual(self.app.tray.title, text)
+        self.app.tray_hover_started = 0
+        self.app.tray_hover_seen = 0
+        self.app.tray_hover_text = None
+        foreground = ctypes.windll.user32.GetForegroundWindow()
+        with patch('app.icon_bounds', return_value=(240, 240, 272, 272)), \
+             patch('app.cursor_position', return_value=(250, 250)), \
+             patch('app.time.monotonic', return_value=1), \
+             patch('app.monitor_workarea', return_value=(0, 0, 320, 240)):
+            self.app.update_tray_hover()
+        self.app.root.update()
+        window = self.app.tray_popup
+        canvas, label, scrollbar = window.answer_widgets
+        self.assertEqual(label.cget('text'), text)
+        self.assertEqual(ctypes.windll.user32.GetForegroundWindow(), foreground)
+        self.assertIsNone(self.app.near_popup)
+        label.event_generate('<MouseWheel>', delta=-120000)
+        self.app.root.update()
+        self.assertEqual(canvas.yview()[1], 1.0)
+        self.assertTrue(label.cget('text').endswith('99번째 번역 문장: 원문을 끝까지 번역합니다.'))
+
+        # Moving from the icon into the answer keeps it open for reading/scrolling.
+        self.app.root.after_cancel(self.app.tray_hover_timer)
+        with patch('app.icon_bounds', return_value=(240, 240, 272, 272)), \
+             patch('app.cursor_position', return_value=(window.winfo_rootx()+10, window.winfo_rooty()+10)), \
+             patch('app.time.monotonic', return_value=2):
+            self.app.update_tray_hover()
+        self.assertIs(self.app.tray_popup, window)
+        self.app.root.after_cancel(self.app.tray_hover_timer)
+        with patch('app.icon_bounds', return_value=(240, 240, 272, 272)), \
+             patch('app.cursor_position', return_value=(900, 900)), \
+             patch('app.time.monotonic', return_value=3):
+            self.app.update_tray_hover()
+        self.assertIsNone(self.app.tray_popup)
+        self.assertFalse(self.app.tray.hover_pending)
 
 
 if __name__ == '__main__':

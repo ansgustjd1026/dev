@@ -31,10 +31,10 @@ class CoreTests(unittest.TestCase):
             self.assertNotIn('clipboard_hotkey', settings)
             self.assertEqual(settings['key'], 'preserved')
 
-    def test_tooltip_utf16_limit(self):
+    def test_tooltip_preserves_full_text_and_emoji(self):
         for value in ['정답: 42', '한글' * 100, '😀' * 100, 'hello\x00world']:
             result = tooltip(value)
-            self.assertLessEqual(len(result.encode('utf-16-le')), 252)
+            self.assertEqual(result, value.replace('\x00', ''))
             self.assertNotIn('\x00', result)
         self.assertEqual(tooltip('정답: 42'), '정답: 42')
 

@@ -8,6 +8,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -24,6 +25,7 @@ from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
 from result_panel import ResultPanel
 from browser_selection import Clipboard, copied_selection, is_browser
+from tray_hover import icon_bounds, cursor_position, contains
 
 import api_client
 import settings_store
@@ -53,12 +55,8 @@ def ask(settings, jpeg, key, text=None, on_progress=None):
 
 
 def tooltip(text):
-    # NOTIFYICONDATAW.szTip is 128 UTF-16 code units including terminator.
-    text = readable_math(text).replace('\x00', '').strip()
-    encoded = text.encode('utf-16-le')
-    if len(encoded) <= 252:
-        return text
-    return encoded[:244].decode('utf-16-le', errors='ignore').rstrip() + '\n…'
+    # The custom tray bubble has no native szTip character limit.
+    return readable_math(text).replace('\x00', '').strip()
 
 def make_icon(color):
     icon = Image.new('RGB', (64, 64), '#172b4d')
@@ -79,11 +77,29 @@ def near_geometry(anchor, work, width, height):
 
 class HomeTrayIcon(pystray.Icon):
     """Open the settings home on a left click; preserve the right-click menu."""
-    def __init__(self, *args, home_action, **kwargs):
+    def __init__(self, *args, home_action, hover_action=None, dismiss_action=None, **kwargs):
         self.home_action = home_action
+        self.hover_action = hover_action
+        self.dismiss_action = dismiss_action
+        self.hover_pending = False
         super().__init__(*args, **kwargs)
 
+    def _message(self, code, flags, **kwargs):
+        # Native szTip is limited to 127 UTF-16 units. Render the full title
+        # ourselves, including on initial registration and Explorer restart.
+        if 'szTip' in kwargs and self.hover_action:
+            kwargs['szTip'] = ''
+        return super()._message(code, flags, **kwargs)
+
     def _on_notify(self, wparam, lparam):
+        if lparam == 0x200 and getattr(self, 'hover_action', None):
+            if not self.hover_pending:
+                self.hover_pending = True
+                self.hover_action()
+            return
+        if lparam in (0x201, 0x202, 0x203, 0x204, 0x205):
+            if getattr(self, 'dismiss_action', None):
+                self.dismiss_action()
         if lparam == 0x203:  # The button-up event handles opening the home.
             return
         if lparam == 0x202:  # WM_LBUTTONUP
@@ -120,7 +136,9 @@ class App:
                 pystray.MenuItem('설정', lambda: self.events.put(('settings', None))),
                 pystray.MenuItem('최근 원문과 답변', lambda: self.events.put(('result', None))),
                 pystray.MenuItem('종료', lambda: self.events.put(('quit', None)))),
-                home_action=lambda: self.events.put(('settings', None)))
+                home_action=lambda: self.events.put(('settings', None)),
+                hover_action=lambda: self.events.put(('tray_hover', None)),
+                dismiss_action=lambda: self.events.put(('tray_dismiss', None)))
         threading.Thread(target=self.tray.run, daemon=True).start()
         self.last = '아직 답변이 없습니다.'
         self.root.after(50, self.poll)
@@ -164,7 +182,10 @@ class App:
 
     def show_near(self, text, anchor):
         self.hide_near()
-        window = self.near_popup = tk.Toplevel(self.root)
+        self.near_popup = self.create_answer_bubble(text, anchor)
+
+    def create_answer_bubble(self, text, anchor):
+        window = tk.Toplevel(self.root)
         window.withdraw()
         window.overrideredirect(True)
         window.attributes('-alpha', 1 - self.settings.get('answer_transparency', 0) / 100)
@@ -186,10 +207,11 @@ class App:
             return 'break'
         for widget in (label, canvas, scrollbar):
             widget.bind('<MouseWheel>', scroll)
-        self.resize_near(text, anchor)
+        self.resize_near(text, anchor, window=window)
+        return window
 
-    def resize_near(self, text, anchor):
-        window = self.near_popup
+    def resize_near(self, text, anchor, window=None):
+        window = self.near_popup if window is None else window
         canvas, label, scrollbar = window.answer_widgets
         work = monitor_workarea(anchor)
         label.configure(text=readable_math(text))
@@ -223,6 +245,55 @@ class App:
         user.SetWindowPos(hwnd, W.HWND(-1), x, y, width, height, 0x10 | 0x40)
         window.answer_shown = True
         # The bubble remains until the selection changes or is cleared.
+
+    def hide_tray_answer(self):
+        timer = getattr(self, 'tray_hover_timer', None)
+        if timer is not None:
+            self.root.after_cancel(timer)
+        self.tray_hover_timer = None
+        window = getattr(self, 'tray_popup', None)
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        self.tray_popup = None
+        self.tray.hover_pending = False
+
+    def begin_tray_hover(self):
+        if getattr(self, 'tray_hover_timer', None) is not None:
+            return
+        self.tray_hover_started = time.monotonic()
+        self.tray_hover_seen = self.tray_hover_started
+        self.tray_hover_text = None
+        self.tray_hover_timer = self.root.after(100, self.update_tray_hover)
+
+    def update_tray_hover(self):
+        self.tray_hover_timer = None
+        try:
+            bounds = icon_bounds(self.tray)
+            point = cursor_position()
+            window = getattr(self, 'tray_popup', None)
+            over_answer = False
+            if window is not None and window.winfo_exists():
+                x, y = window.winfo_rootx(), window.winfo_rooty()
+                over_answer = contains((x, y, x + window.winfo_width(),
+                                        y + window.winfo_height()), point, margin=8)
+            now = time.monotonic()
+            if contains(bounds, point) or over_answer:
+                self.tray_hover_seen = now
+            elif window is None or now - self.tray_hover_seen > 0.5:
+                self.hide_tray_answer()
+                return
+            if now - self.tray_hover_started >= 0.3 and bounds:
+                text = self.tray.title
+                if window is None:
+                    self.tray_popup = self.create_answer_bubble(text, bounds)
+                    self.tray_hover_text = text
+                elif text != self.tray_hover_text:
+                    self.resize_near(text, bounds, window=window)
+                    self.tray_hover_text = text
+            self.tray_hover_timer = self.root.after(100, self.update_tray_hover)
+        except Exception as error:
+            record_error('tray_bubble', error)
+            self.hide_tray_answer()
 
     def selection_changed(self, state):
         if state[0] == self.selection.generation and state[1] is None:
@@ -854,6 +925,8 @@ class App:
                     self.tray.update_menu()
                     self.publish('자동 선택 읽기를 시작하지 못했습니다. 화면 캡처 단축키를 사용하세요.', '#ff8484')
                 elif event == 'settings': self.open_settings()
+                elif event == 'tray_hover': self.begin_tray_hover()
+                elif event == 'tray_dismiss': self.hide_tray_answer()
                 elif event == 'result': self.open_result()
                 elif event == 'led_test':
                     if not self.busy:
@@ -893,6 +966,7 @@ class App:
                 self.root.after(50, self.poll)
 
     def close(self):
+        self.hide_tray_answer()
         self.blinker.close()
         self.mouse.close()
         self.selection.close()
