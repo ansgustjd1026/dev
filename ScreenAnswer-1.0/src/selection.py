@@ -34,7 +34,7 @@ class SelectionGate:
             return None
         if selecting or sample != self.candidate:
             self.candidate, self.since = sample, now
-            if sample is None:
+            if selecting or sample is None:
                 self.sent = None
             return None
         if released:
@@ -219,14 +219,18 @@ class SelectionWatcher:
                 try:
                     sample = selected_text(auto, with_position=True)
                     signature = sample[:2] if sample else None
-                    self.current = signature
-                    state = (active_generation, signature)
+                    selecting = any(ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000 for key in (1, 16))
+                    # A fresh drag/Shift selection is a new user action even if
+                    # the provider keeps reporting the same selected text.
+                    # Clear dispatch/dedup state until the gesture is released.
+                    self.current = None if selecting else signature
+                    state = (active_generation, self.current)
                     if state != last_state:
                         last_state = state
                         self.events.put(('selection_state', state))
-                    selecting = any(ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000 for key in (1, 16))
                     if self.suspended.is_set():
-                        generation = -1
+                        if selecting:
+                            gate.observe(signature, time.monotonic(), selecting=True)
                         continue
                     ready = gate.observe(signature, time.monotonic(), selecting)
                     if ready and self.enabled.is_set() and not self.suspended.is_set() and active_generation == self.generation:

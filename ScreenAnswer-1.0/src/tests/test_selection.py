@@ -5,12 +5,67 @@ from unittest.mock import Mock, patch
 import queue
 import io
 import json
+import threading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from selection import SelectionGate, selected_text, parse_delay_ms, SelectionWatcher
 from app import App, DEFAULTS
 
 
 class SelectionTests(unittest.TestCase):
+    def run_samples(self, samples):
+        watcher = SelectionWatcher.__new__(SelectionWatcher)
+        watcher.enabled, watcher.suspended = threading.Event(), threading.Event()
+        watcher.enabled.set()
+        watcher.stop, watcher.events = Mock(), queue.Queue()
+        watcher.generation, watcher.current, watcher.delay_ms = 4, None, 50
+        state = {'index': -1}
+        def advance(_):
+            state['index'] += 1
+            if state['index'] >= len(samples):
+                return True
+            sample, selecting, suspended = samples[state['index']]
+            (watcher.suspended.set if suspended else watcher.suspended.clear)()
+            return False
+        watcher.stop.wait.side_effect = advance
+        with patch.dict('sys.modules', {'uiautomation': Mock()}), \
+             patch('selection.selected_text', side_effect=lambda *a, **k: samples[state['index']][0]), \
+             patch('selection.ctypes.windll.user32.GetAsyncKeyState',
+                   side_effect=lambda key: 0x8000 if samples[state['index']][1] else 0), \
+             patch('selection.time.monotonic', side_effect=lambda: state['index']):
+            watcher.run()
+        return list(watcher.events.queue)
+
+    def test_watcher_clears_app_dedup_on_new_drag_of_identical_text(self):
+        sample = (7, 'same PDF text', (10, 10, 100, 40))
+        events = self.run_samples([(None, False, False), (sample, False, False),
+            (sample, False, False), (sample, True, False),
+            (sample, False, False), (sample, False, False)])
+        requests = [event for event in events if event[0] == 'selection']
+        self.assertEqual(requests, [('selection', (4, sample))] * 2)
+        first = events.index(requests[0])
+        self.assertIn(('selection_state', (4, None)), events[first+1:])
+
+    def test_selection_made_while_request_busy_is_processed_after_resume(self):
+        old, new = (7, 'old', (1, 2, 3, 4)), (7, 'new', (1, 2, 3, 4))
+        events = self.run_samples([(None, False, False), (old, False, False),
+            (old, False, False), (old, False, True), (new, True, True),
+            (new, False, True), (new, False, False), (new, False, False),
+            (new, False, False)])
+        requests = [event for event in events if event[0] == 'selection']
+        self.assertEqual(requests, [('selection', (4, old)), ('selection', (4, new))])
+
+    def test_same_text_reselected_without_empty_uia_sample_is_sent_again(self):
+        gate = SelectionGate(delay=.05, cooldown=0)
+        sample = (7, 'same selected PDF text')
+        gate.observe(None, 0)
+        gate.observe(sample, 1)
+        self.assertEqual(gate.observe(sample, 1.1), sample)
+        self.assertIsNone(gate.observe(sample, 2))
+        gate.observe(sample, 3, selecting=True)
+        self.assertIsNone(gate.observe(sample, 4))
+        self.assertEqual(gate.observe(sample, 4.1), sample)
+        self.assertIsNone(gate.observe(sample, 5))
+
     def test_custom_delay_and_release(self):
         for milliseconds in (0, 100, 500, 1100, 30000):
             gate = SelectionGate(delay=milliseconds / 1000, cooldown=0)

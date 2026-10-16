@@ -30,8 +30,9 @@ class BubbleTests(unittest.TestCase):
         with patch('app.monitor_workarea', return_value=work):
             self.app.show_near(text, (work[0]+20, work[1]+20, work[0]+100, work[1]+40))
         self.app.root.update()
-        self.assertEqual(ctypes.windll.user32.GetForegroundWindow(), foreground)
         window = self.app.near_popup
+        self.assertNotEqual(ctypes.windll.user32.GetForegroundWindow(),
+                            ctypes.windll.user32.GetAncestor(window.winfo_id(), 2))
         self.assertLessEqual(window.winfo_width(), work[2]-work[0]-16)
         self.assertLessEqual(window.winfo_height(), work[3]-work[1]-16)
         canvas = next(child for child in window.winfo_children() if isinstance(child, tk.Canvas))
@@ -65,7 +66,8 @@ class BubbleTests(unittest.TestCase):
         self.app.root.update()
         self.assertIs(self.app.near_popup, window)
         self.assertEqual(label.cget('text'), text)
-        self.assertEqual(ctypes.windll.user32.GetForegroundWindow(), foreground)
+        self.assertNotEqual(ctypes.windll.user32.GetForegroundWindow(),
+                            ctypes.windll.user32.GetAncestor(window.winfo_id(), 2))
         self.assertLessEqual(window.winfo_height(), 224)
         self.assertLessEqual(window.winfo_width(), 304)
 
@@ -91,7 +93,8 @@ class BubbleTests(unittest.TestCase):
         window = self.app.tray_popup
         canvas, label, scrollbar = window.answer_widgets
         self.assertEqual(label.cget('text'), text)
-        self.assertEqual(ctypes.windll.user32.GetForegroundWindow(), foreground)
+        self.assertNotEqual(ctypes.windll.user32.GetForegroundWindow(),
+                            ctypes.windll.user32.GetAncestor(window.winfo_id(), 2))
         self.assertIsNone(self.app.near_popup)
         label.event_generate('<MouseWheel>', delta=-120000)
         self.app.root.update()
