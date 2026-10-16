@@ -84,6 +84,9 @@ class BubbleTests(unittest.TestCase):
              patch('app.time.monotonic', return_value=1), \
              patch('app.monitor_workarea', return_value=(0, 0, 320, 240)):
             self.app.update_tray_hover()
+            # Drive hover updates explicitly below; a real timer would inspect
+            # the user's actual cursor after these patches end on slow hosts.
+            self.app.root.after_cancel(self.app.tray_hover_timer)
         self.app.root.update()
         window = self.app.tray_popup
         canvas, label, scrollbar = window.answer_widgets

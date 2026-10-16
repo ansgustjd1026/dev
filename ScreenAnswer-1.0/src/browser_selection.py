@@ -59,9 +59,16 @@ class Clipboard:
             getattr(self.gdi, name).argtypes = [W.HANDLE]
 
     @contextmanager
-    def opened(self):
-        if not self.user.OpenClipboard(self.hwnd):
-            raise ValueError('클립보드를 사용 중입니다. 잠시 후 다시 선택해 주세요.')
+    def opened(self, timeout=.8):
+        # Edge and clipboard listeners may briefly keep the clipboard open,
+        # including after its sequence number changes. Wait on the request
+        # worker; never resend Ctrl+C or reuse stale text to resolve contention.
+        deadline = time.monotonic() + timeout
+        while not self.user.OpenClipboard(self.hwnd):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('클립보드가 계속 사용 중입니다. 잠시 후 원문을 다시 선택해 주세요.')
+            time.sleep(min(.02, remaining))
         try:
             yield
         finally:

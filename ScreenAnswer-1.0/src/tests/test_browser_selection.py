@@ -35,6 +35,74 @@ class FakeClipboard:
 
 
 class BrowserSelectionTests(unittest.TestCase):
+    def native_stub(self):
+        clip = Clipboard.__new__(Clipboard)
+        clip.hwnd, clip.user = 99, Mock()
+        return clip
+
+    def test_clipboard_busy_retries_until_open_and_closes_once(self):
+        clip = self.native_stub()
+        clip.user.OpenClipboard.side_effect = [False, False, True]
+        with patch('browser_selection.time.sleep') as sleep, \
+             patch('browser_selection.time.monotonic', side_effect=[0, .01, .03]):
+            with clip.opened():
+                clip.user.CloseClipboard.assert_not_called()
+        self.assertEqual(clip.user.OpenClipboard.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        clip.user.CloseClipboard.assert_called_once()
+
+    def test_clipboard_available_does_not_wait(self):
+        clip = self.native_stub()
+        clip.user.OpenClipboard.return_value = True
+        with patch('browser_selection.time.sleep') as sleep:
+            with clip.opened():
+                pass
+        sleep.assert_not_called()
+        clip.user.OpenClipboard.assert_called_once_with(99)
+        clip.user.CloseClipboard.assert_called_once()
+
+    def test_permanently_busy_clipboard_has_bounded_wait_and_is_not_closed(self):
+        clip = self.native_stub()
+        clip.user.OpenClipboard.return_value = False
+        with patch('browser_selection.time.sleep') as sleep, \
+             patch('browser_selection.time.monotonic', side_effect=[0, .79, .8]):
+            with self.assertRaisesRegex(ValueError, '클립보드가 계속 사용 중'):
+                with clip.opened():
+                    self.fail('Must not enter without owning the clipboard')
+        self.assertEqual(clip.user.OpenClipboard.call_count, 2)
+        self.assertAlmostEqual(sleep.call_args.args[0], .01)
+        clip.user.CloseClipboard.assert_not_called()
+
+    def test_error_inside_opened_clipboard_is_not_retried(self):
+        clip = self.native_stub()
+        clip.user.OpenClipboard.return_value = True
+        with self.assertRaisesRegex(ValueError, 'read failed'):
+            with clip.opened():
+                raise ValueError('read failed')
+        clip.user.OpenClipboard.assert_called_once()
+        clip.user.CloseClipboard.assert_called_once()
+
+    @patch('browser_selection.window_pid', return_value=10)
+    def test_busy_after_copy_reads_fresh_text_and_restores_without_another_copy(self, pid):
+        clip = FakeClipboard()
+        clip.hwnd = 99
+        clip.user.OpenClipboard.side_effect = [False, False, True]
+        clip.opened = lambda: Clipboard.opened(clip)
+        clip.copy = Mock(side_effect=clip.copy)
+        with patch('browser_selection.time.sleep'):
+            self.assertEqual(copied_selection(7, clip, lambda: True), 'Unfortunately')
+        clip.copy.assert_called_once_with(7)
+        self.assertEqual(clip.user.OpenClipboard.call_count, 3)
+        self.assertEqual((clip.restored, clip.freed), (1, 1))
+
+    def test_selection_changed_while_waiting_for_backup_does_not_send_copy(self):
+        clip = FakeClipboard()
+        clip.copy = Mock()
+        with self.assertRaises(ValueError):
+            copied_selection(7, clip, Mock(side_effect=[True, False]))
+        clip.copy.assert_not_called()
+        self.assertEqual((clip.restored, clip.freed), (0, 1))
+
     def test_native_backup_never_passes_gdi_handles_to_global_size(self):
         for fmt in (2, 9, 14, 0x82, 0x8e):
             clip = Clipboard.__new__(Clipboard)
