@@ -44,7 +44,7 @@ class ReferenceTests(unittest.TestCase):
                 self.assertEqual(files[0]['filename'], path.name)
                 self.assertEqual(files[0]['file_data'].split(',')[0], 'data:text/plain;base64')
                 self.assertEqual(base64.b64decode(files[0]['file_data'].split(',')[1]), raw)
-                self.assertFalse(data['store'])
+                self.assertTrue(data['store'])
 
     def test_disabled_files_are_not_read_even_when_missing(self):
         settings = {**DEFAULTS, 'reference_files_enabled': False, 'reference_files': ['missing.pdf']}
