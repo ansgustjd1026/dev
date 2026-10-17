@@ -1,8 +1,9 @@
-"""Read only the selected UIA text; never copy, type, click, or capture."""
+"""Detect selected UIA text and explicit browser document selection gestures."""
 import ctypes
 import os
 import threading
 import time
+from browser_drag import BrowserDragTracker
 
 
 def parse_delay_ms(value):
@@ -158,13 +159,14 @@ def selected_text(auto, own_pid=None, with_position=False):
 
 
 class SelectionWatcher:
-    def __init__(self, events, delay_ms=1100):
+    def __init__(self, events, delay_ms=1100, browser_copy=True):
         self.events = events
         self.enabled = threading.Event()
         self.suspended = threading.Event()
         self.stop = threading.Event()
         self.generation = 0
         self.delay_ms = parse_delay_ms(delay_ms)
+        self.browser_copy = browser_copy
         self.current = None
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -173,6 +175,11 @@ class SelectionWatcher:
         delay_ms = parse_delay_ms(value)
         if delay_ms != self.delay_ms:
             self.delay_ms = delay_ms
+            self.generation += 1
+
+    def set_browser_copy(self, value):
+        if value != self.browser_copy:
+            self.browser_copy = value
             self.generation += 1
 
     def set_enabled(self, value):
@@ -188,6 +195,7 @@ class SelectionWatcher:
         initializer = None
         generation = -1
         gate = SelectionGate()
+        drag = BrowserDragTracker()
         last_state = None
         try:
             while not self.stop.wait(min(0.25, max(0.05, getattr(self, 'delay_ms', 1100) / 2000))):
@@ -215,9 +223,14 @@ class SelectionWatcher:
                 active_generation = self.generation
                 if generation != active_generation:
                     gate = SelectionGate(delay=getattr(self, 'delay_ms', 1100) / 1000, cooldown=0)
+                    drag = BrowserDragTracker()
                     generation = active_generation
                 try:
-                    sample = selected_text(auto, with_position=True)
+                    # A gesture token remains stable while Ctrl+C is processed;
+                    # unreliable PDF UIA ranges must not cancel a valid copy.
+                    sample = drag.poll(auto) if getattr(self, 'browser_copy', False) else None
+                    if sample is None:
+                        sample = selected_text(auto, with_position=True)
                     signature = sample[:2] if sample else None
                     selecting = any(ctypes.windll.user32.GetAsyncKeyState(key) & 0x8000 for key in (1, 16))
                     # A fresh drag/Shift selection is a new user action even if

@@ -15,7 +15,7 @@ STAGES = {'settings', 'key', 'capture', 'api', 'request', 'event', 'bubble', 'tr
 SOURCE_FILES = {'app.py', 'selection.py', 'mouse.py', 'blink.py', 'tasks.py',
                 'references.py', 'led_response.py', 'mathtext.py', 'monitors.py', 'request_body.py',
                 'api_client.py', 'settings_store.py', 'credentials.py', 'hotkeys.py',
-                'browser_selection.py', 'streaming.py', 'tray_hover.py'}
+                'browser_selection.py', 'browser_drag.py', 'streaming.py', 'tray_hover.py'}
 _lock = threading.Lock()
 _handler = None
 _path = None

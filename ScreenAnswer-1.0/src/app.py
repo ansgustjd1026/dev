@@ -25,6 +25,7 @@ from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
 from result_panel import ResultPanel
 from browser_selection import Clipboard, copied_selection, is_browser
+from browser_drag import BrowserCopyRequest
 from tray_hover import icon_bounds, cursor_position, contains
 
 import api_client
@@ -123,7 +124,8 @@ class App:
         self.pending_selection = None
         self.near_popup = None
         self.near_signature = None
-        self.selection = SelectionWatcher(self.events, delay_ms=self.settings['selection_delay_ms'])
+        self.selection = SelectionWatcher(self.events, delay_ms=self.settings['selection_delay_ms'],
+                                          browser_copy=self.settings.get('browser_selection_copy', True))
         self.mouse = MouseWatcher(self.events)
         self.hotkey = Hotkey(self.events)
         for handler, setting, flag in [(self.hotkey, 'hotkey', 'screen_enabled')]:
@@ -352,6 +354,7 @@ class App:
     def answer_selection(self, value):
         generation, sample = value
         _, text = sample[:2]
+        copy_requested = isinstance(text, BrowserCopyRequest)
         if not self.selection.enabled.is_set() or generation != self.selection.generation or self.busy:
             return
         if self.dialog and self.dialog.winfo_exists():
@@ -370,7 +373,12 @@ class App:
         if sample[:2] == self.last_auto_selection:
             return
         try:
-            text = validate_text(text)
+            if copy_requested:
+                if not self.settings.get('browser_selection_copy', True) or not is_browser(sample[0]):
+                    return
+                text = None
+            else:
+                text = validate_text(text)
         except ValueError:
             return
         key = self.request_key()
@@ -391,7 +399,7 @@ class App:
         self.busy = True
         self.selection.suspended.set()
         self.set_tray_color('#ffc86b')
-        if self.settings.get('browser_selection_copy', True) and is_browser(sample[0]):
+        if copy_requested or (self.settings.get('browser_selection_copy', True) and is_browser(sample[0])):
             self.submit(key, text=text, copy_context=(generation, sample))
         else:
             self.submit(key, text=text)
@@ -423,6 +431,7 @@ class App:
         if window and window.winfo_exists():
             window.attributes('-alpha', 1 - updated['answer_transparency'] / 100)
         self.selection.set_delay(updated['selection_delay_ms'])
+        self.selection.set_browser_copy(updated.get('browser_selection_copy', True))
         if self.selection.enabled.is_set() != updated['auto_selection']:
             self.selection.set_enabled(updated['auto_selection'])
         if not updated['auto_selection'] or not updated['bubble_enabled']:
@@ -481,7 +490,7 @@ class App:
             self.request_source = None
         clipboard_hwnd = self.root.winfo_id() if copy_context else None
         self.result_text = 'AI 응답을 기다리는 중입니다.'
-        self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None else '화면') + '의 AI 응답을 기다리는 중…'
+        self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None or copy_context else '화면') + '의 AI 응답을 기다리는 중…'
         settings = self.settings.copy()
         inputs = [jpeg]
         progress = self.translation_progress = queue.Queue(maxsize=1)
