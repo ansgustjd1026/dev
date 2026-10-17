@@ -11,7 +11,7 @@ import threading
 LOG_FILE = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'ScreenAnswer' / 'diagnostics.log'
 MAX_LOG_BYTES = 128 * 1024
 BACKUP_COUNT = 2
-STAGES = {'settings', 'key', 'capture', 'api', 'request', 'event', 'bubble', 'tray_bubble', 'led', 'hotkey', 'history'}
+STAGES = {'settings', 'key', 'capture', 'api', 'request', 'event', 'bubble', 'tray_bubble', 'led', 'hotkey'}
 SOURCE_FILES = {'app.py', 'selection.py', 'mouse.py', 'blink.py', 'tasks.py',
                 'references.py', 'led_response.py', 'mathtext.py', 'monitors.py', 'request_body.py',
                 'api_client.py', 'settings_store.py', 'credentials.py', 'hotkeys.py',

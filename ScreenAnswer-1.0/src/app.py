@@ -24,8 +24,6 @@ from led_response import validate_result
 from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
 from result_panel import ResultPanel
-from history import HistoryIndex
-from history_panel import HistoryPanel
 from browser_selection import Clipboard, copied_selection, is_browser
 from browser_drag import BrowserCopyRequest
 from tray_hover import icon_bounds, cursor_position, contains
@@ -54,9 +52,7 @@ def payload(settings, jpeg=None, text=None):
 
 def ask(settings, jpeg, key, text=None, on_progress=None):
     return api_client.ask(settings, jpeg, key, text=text,
-                          payload_builder=payload, error_logger=record_error, on_progress=on_progress,
-                          on_saved=lambda data: HistoryIndex().add(data, settings.get('task_preset', ''),
-                                                                   'text' if text is not None else 'screen'))
+                          payload_builder=payload, error_logger=record_error, on_progress=on_progress)
 
 
 def tooltip(text):
@@ -558,11 +554,8 @@ class App:
         tabs = ttk.Notebook(settings_body, style='Settings.TNotebook')
         tabs.pack(fill='both', expand=True)
         panes.add(settings_body, weight=3)
-        results = ttk.Notebook(panes)
-        self.result_panel = ResultPanel(results, self)
-        results.add(self.result_panel, text='최근 답변')
-        results.add(HistoryPanel(results, self), text='날짜별 기록')
-        panes.add(results, weight=2)
+        self.result_panel = ResultPanel(panes, self)
+        panes.add(self.result_panel, weight=2)
         positioned = [False]
         def position_panes(event):
             if not positioned[0] and event.width > 100:

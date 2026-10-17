@@ -46,7 +46,7 @@ class CoreTests(unittest.TestCase):
 
     def test_payload(self):
         data = payload(DEFAULTS, b'jpeg-example')
-        self.assertTrue(data['store'])
+        self.assertFalse(data['store'])
         content = data['input'][0]['content']
         self.assertEqual(base64.b64decode(content[1]['image_url'].split(',')[1]), b'jpeg-example')
 
