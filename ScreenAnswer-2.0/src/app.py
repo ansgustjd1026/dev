@@ -24,6 +24,7 @@ from led_response import validate_result
 from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
 from result_panel import ResultPanel
+from hidden_input import HiddenInput, foreground_window, window_handle
 from browser_selection import Clipboard, copied_selection, is_browser
 from browser_drag import BrowserCopyRequest
 from tray_hover import icon_bounds, cursor_position, contains
@@ -36,6 +37,7 @@ from hotkeys import Hotkey, parse_hotkey
 from settings_store import APP_DIR, CONFIG, DEFAULTS, parse_transparency
 
 VERSION = '2.0'
+MANUAL_IDLE_SECONDS = 5
 
 
 def load_settings(warnings=None):
@@ -124,6 +126,10 @@ class App:
         self.manual_draft = ''
         self.manual_status = ''
         self.manual_request = False
+        self.hidden_input = None
+        self.manual_last_input = 0
+        self.manual_idle = False
+        self.manual_previous_window = None
         self.last_auto_selection = None
         self.pending_selection = None
         self.near_popup = None
@@ -174,7 +180,7 @@ class App:
         context = getattr(self, 'pending_selection', None)
         if final:
             self.pending_selection = None
-        if not context or not self.settings['bubble_enabled'] or not self.selection.enabled.is_set() or (self.dialog and self.dialog.winfo_exists()):
+        if not context or not self.settings['bubble_enabled'] or not self.selection.enabled.is_set() or self.settings_visible():
             return
         generation, source, anchor, selected = context
         user = C.windll.user32
@@ -314,7 +320,7 @@ class App:
 
     def set_tray_color(self, color):
         self.tray_color = color
-        shown = '#ffc86b' if getattr(self, 'manual_mode', False) else color if getattr(self, 'settings', {}).get('tray_icon_changes', True) else '#72d7f3'
+        shown = '#ffc86b' if getattr(self, 'manual_mode', False) else '#ff8484' if getattr(self, 'manual_idle', False) else color if getattr(self, 'settings', {}).get('tray_icon_changes', True) else '#72d7f3'
         self.tray.icon = make_icon(shown)
 
     def publish(self, text, color):
@@ -322,8 +328,12 @@ class App:
         self.tray.title = tooltip(text)
         self.set_tray_color(color)
 
+    def settings_visible(self):
+        dialog = getattr(self, 'dialog', None)
+        return bool(dialog and dialog.winfo_exists() and dialog.state() not in ('withdrawn', 'iconic'))
+
     def refresh_input_pause(self):
-        paused = self.busy or (getattr(self, 'dialog', None) and self.dialog.winfo_exists()) or getattr(self, 'manual_mode', False)
+        paused = self.busy or self.settings_visible() or getattr(self, 'manual_mode', False)
         (self.selection.suspended.set if paused else self.selection.suspended.clear)()
 
     def toggle_manual_input(self):
@@ -331,13 +341,24 @@ class App:
             return
         self.set_manual_mode(not getattr(self, 'manual_mode', False))
 
-    def set_manual_mode(self, enabled):
+    def set_manual_mode(self, enabled, timed_out=False):
         panel = getattr(self, 'result_panel', None)
         if panel is not None and panel.winfo_exists():
             panel.remember_draft()
+        receiver = getattr(self, 'hidden_input', None)
+        receiver_foreground = bool(receiver and receiver.active and foreground_window() == window_handle(receiver.window))
+        if receiver is not None:
+            receiver.suspend()
+        if enabled and not getattr(self, 'manual_mode', False):
+            self.manual_previous_window = foreground_window()
         self.manual_mode = enabled
+        self.manual_idle = timed_out
+        if enabled:
+            self.manual_activity()
         self.hide_near()
         self.hide_tray_answer()
+        if timed_out and getattr(self, 'dialog', None) and self.dialog.winfo_exists():
+            self.dialog.withdraw()  # Preserve unsaved settings while resuming inputs.
         self.refresh_input_pause()
         self.set_tray_color(getattr(self, 'tray_color', '#72d7f3'))
         self.tray.update_menu()
@@ -346,8 +367,36 @@ class App:
         panel = getattr(self, 'result_panel', None)
         if panel is not None and panel.winfo_exists():
             panel.sync()
-            if enabled:
+            if enabled and self.settings_visible():
                 panel.views[0].focus_force()
+        if enabled and not self.settings_visible():
+            self.activate_hidden_input()
+        elif not enabled and (receiver_foreground or timed_out):
+            previous = getattr(self, 'manual_previous_window', None)
+            if previous and C.windll.user32.IsWindow(previous):
+                C.windll.user32.SetForegroundWindow(previous)
+
+    def manual_activity(self):
+        if getattr(self, 'manual_mode', False):
+            self.manual_last_input = time.monotonic()
+
+    def activate_hidden_input(self):
+        if not getattr(self, 'manual_mode', False) or self.settings_visible():
+            return
+        if getattr(self, 'hidden_input', None) is None:
+            self.hidden_input = HiddenInput(self.root, self)
+        self.hidden_input.activate()
+
+    def check_manual_input(self):
+        if not getattr(self, 'manual_mode', False):
+            return
+        if not self.busy and time.monotonic() - self.manual_last_input >= MANUAL_IDLE_SECONDS:
+            self.set_manual_mode(False, timed_out=True)
+            self.input_status('5초 동안 입력이 없어 입력 모드를 해제했습니다.')
+            return
+        receiver = getattr(self, 'hidden_input', None)
+        if not self.settings_visible() and receiver is not None:
+            receiver.ensure_focus()
 
     def input_status(self, text):
         self.manual_status = text
@@ -389,7 +438,7 @@ class App:
     def request_key(self, manual=False):
         if self.busy:
             return None
-        if not manual and self.dialog and self.dialog.winfo_exists():
+        if not manual and self.settings_visible():
             return None
         if not manual and getattr(self, 'manual_mode', False):
             return None
@@ -419,6 +468,7 @@ class App:
             self.publish('캡처할 모니터를 확인할 수 없습니다. 다시 시도하세요.', '#ff8484')
             return
         self.busy = True
+        self.manual_idle = False
         self.pending_selection = None
         self.hide_near()
         self.selection.suspended.set()
@@ -433,7 +483,7 @@ class App:
         copy_requested = isinstance(text, BrowserCopyRequest)
         if not self.selection.enabled.is_set() or generation != self.selection.generation or self.busy:
             return
-        if self.dialog and self.dialog.winfo_exists():
+        if self.settings_visible():
             return
         mouse = getattr(self, 'mouse', None)
         if mouse:
@@ -473,6 +523,7 @@ class App:
         self.pending_selection = (generation, sample[0], sample[2] if len(sample) > 2 else None, sample[1])
         self.hide_near()
         self.busy = True
+        self.manual_idle = False
         self.selection.suspended.set()
         self.set_tray_color('#ffc86b')
         if copy_requested or (self.settings.get('browser_selection_copy', True) and is_browser(sample[0])):
@@ -611,10 +662,19 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def open_settings(self):
+        receiver = getattr(self, 'hidden_input', None)
+        if receiver is not None:
+            receiver.suspend()
         if self.dialog and self.dialog.winfo_exists():
+            self.dialog.deiconify()
             self.dialog.lift()
+            self.refresh_input_pause()
+            if getattr(self, 'manual_mode', False):
+                self.result_panel.sync()
+                self.result_panel.views[0].focus_force()
             return
         dialog = self.dialog = tk.Toplevel(self.root)
+        dialog.bind('<KeyPress>', lambda _: self.manual_activity(), add='+')
         self.selection.suspended.set()
         dialog.withdraw()
         dialog.title('ScreenAnswer ' + VERSION + ' 설정')
@@ -624,6 +684,8 @@ class App:
             if event.widget == dialog:
                 self.dialog = None
                 self.refresh_input_pause()
+                if getattr(self, 'manual_mode', False):
+                    self.root.after_idle(self.activate_hidden_input)
         dialog.bind('<Destroy>', dismissed, add='+')
         style = ttk.Style(dialog)
         style.configure('Settings.Title.TLabel', font=('Malgun Gothic', 13, 'bold'))
@@ -718,7 +780,7 @@ class App:
         check(manual, 'manual_input_enabled', '입력 모드 사용')
         entry(manual, 'manual_input_hotkey', '모드 전환 단축키')
         check(manual, 'manual_input_show_panel', '입력 모드로 전환할 때 기존 창 열기')
-        hint(manual, '같은 단축키를 다시 누르면 입력 모드를 해제합니다.\n입력 모드에서는 트레이 아이콘이 주황색입니다.\n오른쪽 전송 원문 칸에서 질문을 작성합니다.\nCtrl+Enter로 전송하고 Enter로 줄을 바꿉니다.\n저장된 AI 작업과 프롬프트를 사용하며 결과는 기존처럼 표시합니다.\n창을 닫아도 입력 모드와 작성 내용은 유지됩니다.\n앱을 종료하면 작성 내용과 답변은 지워집니다.')
+        hint(manual, '입력 모드에서는 창이 안 보여도 ScreenAnswer가 키보드 입력을 받습니다.\n오른쪽 전송 원문 칸에서도 작성 내용을 확인·편집합니다.\nCtrl+Enter로 전송하고 Enter로 줄을 바꿉니다.\n주황색은 입력 중이며, 5초 동안 입력이 없으면 빨간색으로 바뀌고 자동 선택·캡처로 돌아갑니다.\n작성 내용은 앱 종료 전까지 유지됩니다.\n같은 단축키를 다시 눌러 즉시 입력 모드를 해제할 수도 있습니다.')
         capture = section(features, '화면 캡처')
         check(capture, 'screen_enabled', '화면 캡처 사용 · 단축키와 마우스 동작')
         entry(capture, 'hotkey', '화면 단축키')
@@ -954,6 +1016,8 @@ class App:
         height = min(max(720, int(440 * float(dialog.tk.call('tk', 'scaling')))), rect.bottom - rect.top - 64)
         dialog.geometry(f'{width}x{height}+{rect.left+(rect.right-rect.left-width)//2}+{rect.top+(rect.bottom-rect.top-height)//2}')
         dialog.deiconify()
+        if getattr(self, 'manual_mode', False):
+            self.result_panel.views[0].focus_force()
 
     def handle_answer(self, value):
         if isinstance(value,dict):
@@ -988,6 +1052,7 @@ class App:
     def finish_binary(self, count, label):
         if getattr(self, 'manual_request', False):
             self.manual_request = False
+            self.manual_activity()
             self.input_status('요청 실패' if label.startswith('요청 오류') else '답변 완료')
         self.hide_near()
         self.display_selection_answer(label)
@@ -1039,6 +1104,7 @@ class App:
                 elif event == 'result': self.open_result()
                 elif event == 'led_test':
                     if not self.busy:
+                        self.manual_idle = False
                         self.finish_binary(value, 'LED 테스트 · ' + str(value) + '번 (AI 호출 없음)')
                 elif event == 'answer':
                     self.translation_progress = None
@@ -1073,9 +1139,16 @@ class App:
                 pass
         finally:
             if not stopping:
+                try:
+                    self.check_manual_input()
+                except Exception as error:
+                    record_error('manual_input', error)
                 self.root.after(50, self.poll)
 
     def close(self):
+        self.manual_mode = False
+        if getattr(self, 'hidden_input', None) is not None:
+            self.hidden_input.close()
         self.hide_tray_answer()
         self.blinker.close()
         self.mouse.close()
@@ -1157,6 +1230,8 @@ def main():
                 assert not app.selection.suspended.is_set()
                 app.manual_hotkey.register('Ctrl+Alt+Space')
                 app.manual_hotkey.register(None)
+                from runtime_checks import check_hidden_input
+                check_hidden_input(app)
             finally:
                 app.close()
             return

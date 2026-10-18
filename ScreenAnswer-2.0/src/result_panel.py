@@ -1,6 +1,7 @@
 """Recent input and answer embedded beside the settings pages."""
 import tkinter as tk
 from tkinter import ttk
+from hidden_input import commit_composition
 
 
 class ResultPanel(ttk.LabelFrame):
@@ -27,6 +28,7 @@ class ResultPanel(ttk.LabelFrame):
         self.editing = None
         self.updating = False
         self.views[0].bind('<<Modified>>', self.remember_draft)
+        self.views[0].bind('<KeyPress>', lambda _: self.app.manual_activity())
         self.views[0].bind('<Control-Return>', self.send)
         self.views[0].bind('<Control-KP_Enter>', self.send)
         self.status = ttk.Label(self, wraplength=340)
@@ -46,10 +48,12 @@ class ResultPanel(ttk.LabelFrame):
         if source.edit_modified():
             if self.editing and not self.updating:
                 self.app.manual_draft = source.get('1.0', 'end-1c')
+                self.app.manual_activity()
             source.edit_modified(False)
 
     def send(self, _event=None):
         if getattr(self.app, 'manual_mode', False):
+            commit_composition(self.views[0])
             self.app.manual_draft = self.views[0].get('1.0', 'end-1c')
             self.app.submit_manual(self.app.manual_draft)
             self.sync()
@@ -64,9 +68,13 @@ class ResultPanel(ttk.LabelFrame):
         for index, value in enumerate(values):
             # Never replace the editor during a refresh: typing, selection,
             # undo and Korean IME composition must remain intact.
+            remote_update = False
             if index == 0 and editing and not changed_mode:
-                continue
-            if value != self.displayed[index] or (index == 0 and changed_mode):
+                source = self.views[0]
+                remote_update = source.focus_get() != source and source.get('1.0', 'end-1c') != value
+                if not remote_update:
+                    continue
+            if value != self.displayed[index] or (index == 0 and changed_mode) or remote_update:
                 text = self.views[index]
                 self.updating = True
                 text.configure(state='normal')

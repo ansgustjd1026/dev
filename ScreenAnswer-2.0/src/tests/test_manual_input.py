@@ -6,6 +6,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 import unittest
 from unittest.mock import Mock, patch
@@ -21,6 +22,7 @@ class ManualInputTests(unittest.TestCase):
         app.settings = {**DEFAULTS, 'led_enabled': False}
         app.busy, app.dialog, app.manual_request = False, None, False
         app.manual_mode, app.manual_draft, app.manual_status = False, '', ''
+        app.activate_hidden_input = Mock()
         app.selection = Mock()
         app.selection.suspended = threading.Event()
         app.hotkey, app.manual_hotkey, app.tray, app.blinker = Mock(), Mock(), Mock(), Mock()
@@ -161,3 +163,39 @@ class ManualInputTests(unittest.TestCase):
             handler.commands.put(('stop',))
             handler.thread.join(3)
         self.assertFalse(handler.thread.is_alive())
+
+    def test_idle_timeout_restores_other_inputs_and_red_icon(self):
+        app = self.make_app()
+        app.manual_mode = True
+        app.manual_last_input = 10
+        app.manual_draft = '작성 중인 질문'
+        with patch('app.time.monotonic', return_value=15.01), patch('app.make_icon') as icon:
+            app.check_manual_input()
+            icon.assert_called_with('#ff8484')
+        self.assertFalse(app.manual_mode)
+        self.assertTrue(app.manual_idle)
+        self.assertFalse(app.selection.suspended.is_set())
+        self.assertEqual(app.manual_draft, '작성 중인 질문')
+
+    def test_activity_extends_idle_deadline_and_request_is_not_interrupted(self):
+        app = self.make_app()
+        app.manual_mode = True
+        with patch('app.time.monotonic', return_value=20):
+            app.manual_activity()
+        self.assertEqual(app.manual_last_input, 20)
+        with patch('app.time.monotonic', return_value=24.99):
+            app.check_manual_input()
+        self.assertTrue(app.manual_mode)
+        app.busy = True
+        with patch('app.time.monotonic', return_value=99):
+            app.check_manual_input()
+        self.assertTrue(app.manual_mode)
+
+    def test_withdrawn_settings_do_not_block_input_after_idle(self):
+        app = self.make_app()
+        app.dialog = Mock()
+        app.dialog.state.return_value = 'withdrawn'
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'test-key'}):
+            self.assertEqual(app.request_key(), 'test-key')
+        app.refresh_input_pause()
+        self.assertFalse(app.selection.suspended.is_set())
