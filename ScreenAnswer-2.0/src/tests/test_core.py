@@ -41,7 +41,8 @@ class CoreTests(unittest.TestCase):
     def test_hotkeys(self):
         self.assertEqual(parse_hotkey('Ctrl+Alt+Q'), (0x4003, ord('Q')))
         self.assertEqual(parse_hotkey('Ctrl+Shift+F8'), (0x4006, 0x77))
-        for value in ['Q', 'Ctrl+Ctrl+Q', 'Ctrl+F25', 'Ctrl+Space', 'Ctrl+한']:
+        self.assertEqual(parse_hotkey('Ctrl+Alt+Space'), (0x4003, 0x20))
+        for value in ['Q', 'Ctrl+Ctrl+Q', 'Ctrl+F25', 'Ctrl+Enter', 'Ctrl+한']:
             with self.assertRaises(ValueError): parse_hotkey(value)
 
     def test_payload(self):

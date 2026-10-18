@@ -24,6 +24,7 @@ from led_response import validate_result
 from monitors import monitor_workarea, capture_bounds
 from diagnostics import record_error
 from result_panel import ResultPanel
+from manual_input import ManualInput
 from browser_selection import Clipboard, copied_selection, is_browser
 from browser_drag import BrowserCopyRequest
 from tray_hover import icon_bounds, cursor_position, contains
@@ -35,7 +36,7 @@ from credentials import protect
 from hotkeys import Hotkey, parse_hotkey
 from settings_store import APP_DIR, CONFIG, DEFAULTS, parse_transparency
 
-VERSION = '1.0'
+VERSION = '2.0'
 
 
 def load_settings(warnings=None):
@@ -120,6 +121,8 @@ class App:
         self.busy = False
         self.blinker = Blinker(self.root)
         self.dialog = None
+        self.manual_window = None
+        self.manual_request = False
         self.last_auto_selection = None
         self.pending_selection = None
         self.near_popup = None
@@ -128,13 +131,17 @@ class App:
                                           browser_copy=self.settings.get('browser_selection_copy', True))
         self.mouse = MouseWatcher(self.events)
         self.hotkey = Hotkey(self.events)
-        for handler, setting, flag in [(self.hotkey, 'hotkey', 'screen_enabled')]:
+        self.manual_hotkey = Hotkey(self.events, event_name='manual_input')
+        for handler, setting, flag in [(self.hotkey, 'hotkey', 'screen_enabled'),
+                                       (self.manual_hotkey, 'manual_input_hotkey', 'manual_input_enabled')]:
             try:
                 handler.register(self.settings[setting] if not demo and self.settings[flag] else None)
             except ValueError as error:
                 messagebox.showerror('단축키', self.settings[setting] + '\n' + str(error))
         self.tray = HomeTrayIcon('ScreenAnswer', make_icon('#72d7f3'), 'ScreenAnswer · ' + self.settings['hotkey'],
             pystray.Menu(
+                pystray.MenuItem('질문 입력창 열기 / 숨기기', lambda: self.events.put(('manual_input', None)),
+                                enabled=lambda _: self.settings['manual_input_enabled']),
                 pystray.MenuItem('설정', lambda: self.events.put(('settings', None))),
                 pystray.MenuItem('최근 원문과 답변', lambda: self.events.put(('result', None))),
                 pystray.MenuItem('종료', lambda: self.events.put(('quit', None)))),
@@ -312,10 +319,68 @@ class App:
         self.tray.title = tooltip(text)
         self.set_tray_color(color)
 
-    def request_key(self):
+    def manual_visible(self):
+        window = getattr(self, 'manual_window', None)
+        return window is not None and window.visible
+
+    def refresh_input_pause(self):
+        paused = self.busy or (getattr(self, 'dialog', None) and self.dialog.winfo_exists()) or self.manual_visible()
+        (self.selection.suspended.set if paused else self.selection.suspended.clear)()
+
+    def toggle_manual_input(self):
+        if not self.settings.get('manual_input_enabled', True):
+            return
+        if self.manual_visible():
+            self.manual_window.hide()
+            return
+        self.hide_near()
+        self.hide_tray_answer()
+        if getattr(self, 'manual_window', None) is None:
+            self.manual_window = ManualInput(self.root, self.submit_manual, self.refresh_input_pause)
+        self.manual_window.show(self.settings['task_preset'], self.settings['manual_input_hotkey'])
+        self.manual_window.set_busy(self.busy)
+
+    def submit_manual(self, text):
+        window = self.manual_window
+        if self.busy:
+            window.status.configure(text='현재 요청이 끝난 뒤 전송해 주세요.')
+            return
+        if self.dialog and self.dialog.winfo_exists():
+            window.status.configure(text='설정 창을 닫은 뒤 전송해 주세요.')
+            return
+        try:
+            if not text.strip():
+                raise ValueError('질문이나 번역할 원문을 입력해 주세요.')
+            if len(text.strip()) > 50000:
+                raise ValueError('입력은 50,000자 이내로 작성해 주세요.')
+            text = validate_text(text)
+        except ValueError as error:
+            window.status.configure(text=str(error))
+            return
+        key = self.request_key(manual=True)
+        if not key:
+            window.status.configure(text=self.last)
+            return
+        self.busy = True
+        self.manual_request = True
+        self.pending_selection = None
+        self.refresh_input_pause()
+        window.set_busy(True)
+        window.status.configure(text=f"{self.settings['task_preset']} · 응답을 기다리는 중입니다.")
+        window.set_result('')
+        self.set_tray_color('#ffc86b')
+        try:
+            self.submit(key, text=text)
+        except Exception as error:
+            record_error('manual_input', error)
+            self.handle_error('요청을 시작하지 못했습니다. 다시 시도해 주세요.')
+
+    def request_key(self, manual=False):
         if self.busy:
             return None
         if self.dialog and self.dialog.winfo_exists():
+            return None
+        if not manual and self.manual_visible():
             return None
         try:
             key = os.environ.get('OPENAI_API_KEY', '').strip()
@@ -414,16 +479,30 @@ class App:
                    'mouse_click_count': click_number(updated['mouse_click_count']),
                    'mouse_click_interval_ms': click_interval(updated['mouse_click_interval_ms'])}
         previous = self.settings.copy()
+        parse_hotkey(updated['hotkey'])
+        manual_combo = parse_hotkey(updated.get('manual_input_hotkey', DEFAULTS['manual_input_hotkey']))
+        if (updated['screen_enabled'] and updated.get('manual_input_enabled', True)
+                and parse_hotkey(updated['hotkey']) == manual_combo):
+            raise ValueError('화면 캡처와 질문 입력에는 서로 다른 단축키를 지정해 주세요.')
+        handlers = [(self.hotkey, 'hotkey', 'screen_enabled')]
+        if getattr(self, 'manual_hotkey', None) is not None:
+            handlers.append((self.manual_hotkey, 'manual_input_hotkey', 'manual_input_enabled'))
         try:
             # Release both first so exchanging the two hotkeys is supported.
-            self.hotkey.register(None)
-            self.hotkey.register(updated['hotkey'] if updated['screen_enabled'] else None)
+            for handler, _, _ in handlers:
+                handler.register(None)
+            for handler, setting, flag in handlers:
+                handler.register(updated[setting] if updated[flag] else None)
             save_settings(updated)
         except Exception:
-            self.hotkey.register(None)
-            self.hotkey.register(previous['hotkey'] if previous['screen_enabled'] else None)
+            for handler, _, _ in handlers:
+                handler.register(None)
+            for handler, setting, flag in handlers:
+                handler.register(previous[setting] if previous[flag] else None)
             raise
         self.settings = updated
+        if not updated.get('manual_input_enabled', True) and self.manual_visible():
+            self.manual_window.hide()
         self.set_tray_color(getattr(self, 'tray_color', '#72d7f3'))
         if getattr(self, 'mouse', None):
             self.mouse.configure(updated['mouse_click_enabled'] and updated['screen_enabled'], updated['mouse_click_count'], updated['mouse_click_interval_ms'], circle_enabled=updated['mouse_circle_enabled'] and updated['screen_enabled'])
@@ -458,9 +537,11 @@ class App:
         self.scan(source=source, point=point)
 
     def capture(self, key, bounds=None):
-        if not self.settings.get('screen_enabled', True):
+        if not self.settings.get('screen_enabled', True) or self.manual_visible():
             self.busy = False
-            self.selection.suspended.clear()
+            self.refresh_input_pause()
+            if getattr(self, 'manual_window', None) is not None:
+                self.manual_window.set_busy(False)
             return
         try:
             with ExitStack() as resources:
@@ -478,7 +559,7 @@ class App:
         except Exception as error:
             record_error('capture', error)
             self.busy = False
-            self.selection.suspended.clear()
+            self.refresh_input_pause()
             self.publish('화면을 캡처할 수 없습니다. 일반 Windows 데스크톱에서 다시 시도하세요.', '#ff8484')
             return
         self.submit(key, jpeg=jpeg)
@@ -526,7 +607,6 @@ class App:
             return
         dialog = self.dialog = tk.Toplevel(self.root)
         self.selection.suspended.set()
-        dialog.bind('<Destroy>', lambda event: self.selection.suspended.clear() if event.widget == dialog and not self.busy else None)
         dialog.withdraw()
         dialog.title('ScreenAnswer ' + VERSION + ' 설정')
         dialog.resizable(True, True)
@@ -534,6 +614,7 @@ class App:
         def dismissed(event):
             if event.widget == dialog:
                 self.dialog = None
+                self.refresh_input_pause()
         dialog.bind('<Destroy>', dismissed, add='+')
         style = ttk.Style(dialog)
         style.configure('Settings.Title.TLabel', font=('Malgun Gothic', 13, 'bold'))
@@ -581,8 +662,8 @@ class App:
                     canvas.yview_scroll(-int(e.delta / 120), 'units')
             dialog.bind('<MouseWheel>', wheel, add='+')
             return body
-        features, selection_page, feedback, api, reference_page = (
-            page('화면 캡처'), page('텍스트 선택'), page('결과 알림'), page('AI'), page('참고 자료'))
+        manual_page, features, selection_page, feedback, api, reference_page = (
+            page('직접 입력'), page('화면 캡처'), page('텍스트 선택'), page('결과 알림'), page('AI'), page('참고 자료'))
         entries, fields, flags, checks = [], {}, {}, {}
         def section(parent, title):
             box = ttk.LabelFrame(parent, text=title, padding=(12, 8))
@@ -624,6 +705,10 @@ class App:
             widget = ttk.Combobox(parent, textvariable=fields[name], values=list(values), state='readonly', width=20)
             widget.grid(row=row, column=1, sticky='ew', pady=6)
             return widget
+        manual = section(manual_page, '질문 입력창')
+        check(manual, 'manual_input_enabled', '질문 입력창 사용')
+        entry(manual, 'manual_input_hotkey', '열기 / 숨기기 단축키')
+        hint(manual, '같은 단축키를 다시 누르거나 Esc를 누르면 숨깁니다.\n숨겨도 작성 중인 내용과 답변은 유지됩니다.\nCtrl+Enter로 전송하고 Enter로 줄을 바꿉니다.\nAI 탭에서 선택한 작업과 프롬프트를 사용합니다.\n앱을 종료하면 작성 내용과 답변은 지워집니다.')
         capture = section(features, '화면 캡처')
         check(capture, 'screen_enabled', '화면 캡처 사용 · 단축키와 마우스 동작')
         entry(capture, 'hotkey', '화면 단축키')
@@ -823,6 +908,7 @@ class App:
             updated['task_profiles'] = {name:dict(profile) for name,profile in task_profiles.items()}
             updated.update({name: variable.get() for name, variable in flags.items()})
             updated.update(hotkey=fields['hotkey'].get().strip(), model=fields['model'].get().strip(), prompt=prompt.get('1.0', 'end-1c').strip())
+            updated['manual_input_hotkey'] = fields['manual_input_hotkey'].get().strip()
             try:
                 updated.update(task_preset=fields['task_preset'].get(), extra_request=extra_request.get('1.0', 'end-1c').strip(), translation_model=fields['translation_model'].get().strip(),translation_language=fields['translation_language'].get())
                 updated.update({name: value.get() for name, value in led_values.items()})
@@ -890,6 +976,10 @@ class App:
         self.open_settings()
 
     def finish_binary(self, count, label):
+        if getattr(self, 'manual_request', False):
+            self.manual_request = False
+            self.manual_window.set_result(self.result_text)
+            self.manual_window.status.configure(text='요청 실패' if label.startswith('요청 오류') else '답변 완료')
         self.hide_near()
         self.display_selection_answer(label)
         self.busy = True
@@ -897,7 +987,9 @@ class App:
         self.publish(label, '#ff8484' if label.startswith(('요청 오류', '판별 불가')) else '#7ce6a6')
         def finished(error):
             self.busy = False
-            self.selection.suspended.clear()
+            self.refresh_input_pause()
+            if getattr(self, 'manual_window', None) is not None:
+                self.manual_window.set_busy(False)
             if error:
                 self.publish('LED 알림 실패: ' + error, '#ff8484')
         try:
@@ -920,6 +1012,7 @@ class App:
                     stopping = True
                     return
                 if event == 'scan': self.scan()
+                elif event == 'manual_input': self.toggle_manual_input()
                 elif event == 'mouse_scan': self.mouse_scan(value)
                 elif event == 'toggle_circle': self.toggle_feature('mouse_circle_enabled')
                 elif event == 'toggle_mouse': self.toggle_feature('mouse_click_enabled')
@@ -964,8 +1057,7 @@ class App:
             # Do not expose exception text that could contain request data.
             if event in ('scan', 'selection', 'answer', 'error', 'led_test'):
                 self.busy = bool(self.blinker.active)
-                if not self.busy and not (self.dialog and self.dialog.winfo_exists()):
-                    self.selection.suspended.clear()
+                self.refresh_input_pause()
             try:
                 self.publish('이벤트 처리에 실패했습니다. 다시 시도하세요.', '#ff8484')
             except Exception:
@@ -981,6 +1073,8 @@ class App:
         self.selection.close()
         self.hotkey.commands.put(('stop',))
         self.hotkey.thread.join(timeout=1)
+        self.manual_hotkey.commands.put(('stop',))
+        self.manual_hotkey.thread.join(timeout=1)
         self.tray.stop()
         self.root.destroy()
 
@@ -1012,7 +1106,30 @@ def main():
         messagebox.showinfo('ScreenAnswer', '이미 실행 중입니다. 시스템 트레이의 아이콘을 확인하세요.')
         return
     try:
-        app = App(demo='--demo' in sys.argv or '--smoke-test' in sys.argv)
+        manual_test = '--manual-runtime-test' in sys.argv
+        app = App(demo=manual_test or '--demo' in sys.argv or '--smoke-test' in sys.argv)
+        if manual_test:
+            try:
+                app.root.update()
+                app.toggle_manual_input()
+                app.root.update()
+                assert app.manual_visible() and app.selection.suspended.is_set()
+                app.manual_window.draft.insert('1.0', '질문 입력 확인')
+                app.toggle_manual_input()
+                assert not app.manual_visible()
+                assert not app.selection.suspended.is_set()
+                app.toggle_manual_input()
+                assert app.manual_window.draft.get('1.0', 'end-1c') == '질문 입력 확인'
+                app.toggle_manual_input()
+                app.open_settings()
+                app.root.update()
+                app.dialog.destroy()
+                assert not app.selection.suspended.is_set()
+                app.manual_hotkey.register('Ctrl+Alt+Space')
+                app.manual_hotkey.register(None)
+            finally:
+                app.close()
+            return
         if '--smoke-test' in sys.argv:
             app.root.after(1500, app.close)
         app.root.mainloop()

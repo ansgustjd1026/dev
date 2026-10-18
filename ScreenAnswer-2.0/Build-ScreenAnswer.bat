@@ -6,5 +6,5 @@ if not exist ".venv\Scripts\python.exe" (
 )
 ".venv\Scripts\python.exe" -m pip install -r requirements-dev.txt
 if errorlevel 1 exit /b 1
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm ScreenAnswer-1.0.spec
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm ScreenAnswer-2.0.spec
 exit /b %errorlevel%

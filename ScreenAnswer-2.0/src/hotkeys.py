@@ -14,10 +14,12 @@ def parse_hotkey(value):
     key = parts[-1]
     if len(key) == 1 and key.isascii() and key.isalnum():
         vk = ord(key)
+    elif key == 'SPACE':
+        vk = 0x20
     elif key.startswith('F') and key[1:].isdigit() and 1 <= int(key[1:]) <= 24:
         vk = 0x70 + int(key[1:]) - 1
     else:
-        raise ValueError('키는 영문, 숫자 또는 F1~F24를 사용하세요.')
+        raise ValueError('키는 영문, 숫자, Space 또는 F1~F24를 사용하세요.')
     return sum(modifiers[x] for x in parts[:-1]) | 0x4000, vk
 
 class Hotkey:

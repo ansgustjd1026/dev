@@ -16,6 +16,9 @@ class BubbleTests(unittest.TestCase):
         self.app = App.__new__(App)
         self.app.root = tk.Tk()
         self.app.root.withdraw()
+        # Drain Tk's initial focus events, as the running tray mainloop does
+        # before a user can trigger a bubble.
+        self.app.root.update()
         self.app.settings = {'answer_transparency': 0}
         self.app.near_popup = None
 
