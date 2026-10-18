@@ -24,22 +24,68 @@ class ResultPanel(ttk.LabelFrame):
             scrollbar.configure(command=text.yview)
             self.views.append(text)
         self.displayed = [None, None]
+        self.editing = None
+        self.updating = False
+        self.views[0].bind('<<Modified>>', self.remember_draft)
+        self.views[0].bind('<Control-Return>', self.send)
+        self.views[0].bind('<Control-KP_Enter>', self.send)
+        self.status = ttk.Label(self, wraplength=340)
+        self.status.grid(row=4, column=0, sticky='ew', pady=(8, 4))
+        self.send_button = ttk.Button(self, text='전송 (Ctrl+Enter)', command=self.send)
+        self.send_button.grid(row=5, column=0, sticky='e')
         self.job = None
         self.bind('<Destroy>', self.stop)
         self.refresh()
 
     def refresh(self):
-        values = (getattr(self.app, 'request_source', None) or '아직 전송한 텍스트가 없습니다.',
+        self.sync()
+        self.job = self.after(250, self.refresh)
+
+    def remember_draft(self, _event=None):
+        source = self.views[0]
+        if source.edit_modified():
+            if self.editing and not self.updating:
+                self.app.manual_draft = source.get('1.0', 'end-1c')
+            source.edit_modified(False)
+
+    def send(self, _event=None):
+        if getattr(self.app, 'manual_mode', False):
+            self.app.manual_draft = self.views[0].get('1.0', 'end-1c')
+            self.app.submit_manual(self.app.manual_draft)
+            self.sync()
+        return 'break'
+
+    def sync(self):
+        editing = getattr(self.app, 'manual_mode', False)
+        changed_mode = editing != self.editing
+        self.editing = editing
+        values = (getattr(self.app, 'manual_draft', '') if editing else getattr(self.app, 'request_source', None) or '아직 전송한 텍스트가 없습니다.',
                   getattr(self.app, 'result_text', '아직 AI 응답이 없습니다.'))
         for index, value in enumerate(values):
-            if value != self.displayed[index]:
+            # Never replace the editor during a refresh: typing, selection,
+            # undo and Korean IME composition must remain intact.
+            if index == 0 and editing and not changed_mode:
+                continue
+            if value != self.displayed[index] or (index == 0 and changed_mode):
                 text = self.views[index]
+                self.updating = True
                 text.configure(state='normal')
                 text.delete('1.0', 'end')
                 text.insert('1.0', value)
-                text.configure(state='disabled')
+                text.edit_modified(False)
+                text.configure(state='normal' if index == 0 and editing else 'disabled')
                 self.displayed[index] = value
-        self.job = self.after(250, self.refresh)
+                self.updating = False
+        self.configure(text='입력 모드 · 원문과 답변' if editing else '최근 원문과 답변')
+        self.status.configure(text=(getattr(self.app, 'manual_status', '') or
+            f"저장된 작업: {self.app.settings['task_preset']} · Ctrl+Enter로 전송") if editing else '')
+        if editing:
+            self.status.grid()
+            self.send_button.grid()
+            self.send_button.configure(state='disabled' if self.app.busy else 'normal')
+        else:
+            self.status.grid_remove()
+            self.send_button.grid_remove()
 
     def stop(self, event):
         if event.widget == self and self.job is not None:

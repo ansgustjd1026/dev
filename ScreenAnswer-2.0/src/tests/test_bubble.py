@@ -1,5 +1,6 @@
 """Exercise the actual Tk bubble without captures, API calls or tray hooks."""
 import ctypes
+import gc
 import sys
 import tkinter as tk
 import unittest
@@ -27,6 +28,8 @@ class BubbleTests(unittest.TestCase):
             self.app.hide_tray_answer()
         self.app.hide_near()
         self.app.root.destroy()
+        del self.app
+        gc.collect()  # Release Tk cycles on the GUI thread before worker tests.
 
     def show(self, text, work):
         foreground = ctypes.windll.user32.GetForegroundWindow()
