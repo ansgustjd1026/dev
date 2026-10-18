@@ -56,6 +56,12 @@ def check_hidden_input(app):
     pump()
     assert app.dialog.focus_get() == app.result_panel.views[0]
     assert app.result_panel.views[0].get('1.0', 'end-1c') == expected
+    app.dialog.iconify()
+    pump()
+    assert app.hidden_input.active and not app.settings_visible()
+    app.open_settings()
+    pump()
+    assert not app.hidden_input.active and app.settings_visible()
     app.result_panel.views[0].insert('end', ' 편집')
     pump()
     app.dialog.destroy()

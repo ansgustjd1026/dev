@@ -395,8 +395,11 @@ class App:
             self.input_status('5초 동안 입력이 없어 입력 모드를 해제했습니다.')
             return
         receiver = getattr(self, 'hidden_input', None)
-        if not self.settings_visible() and receiver is not None:
-            receiver.ensure_focus()
+        if not self.settings_visible():
+            if receiver is None or not receiver.active:
+                self.activate_hidden_input()
+            else:
+                receiver.ensure_focus()
 
     def input_status(self, text):
         self.manual_status = text
