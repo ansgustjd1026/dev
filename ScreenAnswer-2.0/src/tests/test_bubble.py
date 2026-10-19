@@ -81,7 +81,7 @@ class BubbleTests(unittest.TestCase):
         text = '\n'.join(f'{n}번째 번역 문장: 원문을 끝까지 번역합니다.' for n in range(100))
         self.app.tray = Mock(title='', hover_pending=True)
         self.app.set_tray_color = Mock()
-        self.app.publish(text, '#7ce6a6')
+        self.app.publish(text, '#72d7f3')
         self.assertEqual(self.app.tray.title, text)
         self.app.tray_hover_started = 0
         self.app.tray_hover_seen = 0

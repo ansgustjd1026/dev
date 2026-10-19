@@ -163,7 +163,7 @@ class App:
             self.selection.set_enabled(self.settings['auto_selection'])
             self.mouse.configure(self.settings['mouse_click_enabled'] and self.settings['screen_enabled'], self.settings['mouse_click_count'], self.settings['mouse_click_interval_ms'], circle_enabled=self.settings['mouse_circle_enabled'] and self.settings['screen_enabled'])
         if demo:
-            self.root.after(250, lambda: self.publish('ScreenAnswer 데모 · 화면 캡처와 API 호출 없이 실행 중입니다.', '#7ce6a6'))
+            self.root.after(250, lambda: self.publish('ScreenAnswer 데모 · 화면 캡처와 API 호출 없이 실행 중입니다.', '#72d7f3'))
         elif recovery_warnings:
             self.root.after(200, lambda: self.publish(recovery_warnings[0], '#ff8484'))
         elif not self.settings['key'] and not os.environ.get('OPENAI_API_KEY'):
@@ -1061,7 +1061,7 @@ class App:
         self.display_selection_answer(label)
         self.busy = True
         self.selection.suspended.set()
-        self.publish(label, '#ff8484' if label.startswith(('요청 오류', '판별 불가')) else '#7ce6a6')
+        self.publish(label, '#ff8484' if label.startswith(('요청 오류', '판별 불가')) else '#72d7f3')
         def finished(error):
             self.busy = False
             self.refresh_input_pause()
