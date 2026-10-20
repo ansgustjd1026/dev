@@ -16,6 +16,7 @@ import {
   readJsonBody,
 } from "@/lib/security/api-limits";
 import { normalizeSpokenText } from "@/lib/captions/spoken-text";
+import { createTopicSeed } from "@/lib/scripts/topic-seed";
 import {
   getSafeVideoVisualStyle,
   type VideoVisualStyle,
@@ -185,14 +186,13 @@ async function generateRandomTopic(
   userId: string,
   visualStyle: VideoVisualStyle
 ) {
+  const seed = createTopicSeed(visualStyle);
   const audienceBrief =
     visualStyle === "webtoon"
       ? "역할: 10~20대가 바로 공감할 현실 밀착형 웹툰 숏폼 기획자.\n" +
-        "우선 소재: 썸과 연애의 오해, 입시와 성적 압박, 대학·학교생활, 부모와 자녀의 갈등, 형제자매 비교, 친구 사이의 질투·배신·돈 문제.\n" +
-        "인물은 학생, 대학생, 사회초년생 등 10~20대의 생활과 관계가 자연스럽게 드러나게 설정한다. 미성년 인물의 성적 소재는 사용하지 않는다.\n"
-      : "역할: 50~60대 시청자를 위한 생활 밀착형 막장 숏폼 기획자.\n" +
-        "우선 소재: 성인 자녀의 돈 요구, 부부 생활비와 재취업, 형제간 재산 정리, 재혼 가족, 명절과 축의금, 아파트 주차·층간소음·관리비, 동창 모임, 자영업 손님·직원, 친구 돈거래, 병원 대기와 보호자 갈등.\n" +
-        "기본 인물은 일·가정·관계를 활발히 이어가는 50~60대 성인으로 설정한다. 고령의 할아버지·할머니, 와병, 간병, 상속 갈등은 주제가 직접 요구하지 않으면 기본 소재로 쓰지 않는다.\n";
+        "10~20대가 이해하기 쉬운 표현을 쓰되, 아래에서 선택한 관계와 장소를 유지한다. 미성년 인물의 성적 소재는 사용하지 않는다.\n"
+      : "역할: 50~60대 시청자가 공감할 다양한 일상 이야기를 만드는 숏폼 기획자.\n" +
+        "연령대는 표현의 친숙함을 위한 기준이다. 등장인물의 연령이나 가족 관계를 고정하지 않는다.\n";
 
   const response = await openai.responses.create({
     model: SCRIPT_MODEL,
@@ -200,8 +200,10 @@ async function generateRandomTopic(
       getLanguageInstruction(language) +
       "\n\n" +
       audienceBrief +
+      `이번 요청에서 무작위로 선택한 소재:\n분야: ${seed.category}\n관계: ${seed.relationship}\n장소: ${seed.place}\n갈등: ${seed.conflict}\n` +
+      "선택한 관계·장소·갈등을 모두 사용해 하나의 자연스러운 사건으로 구체화한다. 다른 분야나 관계로 바꾸지 않는다.\n" +
       "과제: 실제 주변에서 벌어질 법한 갈등 한 장면을 주제 한 문장으로 만든다.\n" +
-      "막장 장치: 숨긴 돈, 뻔뻔한 요구, 편애, 이중잣대, 배신, 뒤늦게 드러난 속셈 중 하나만 쓴다.\n" +
+      "선택한 갈등에서 긴장감을 만든다. 자녀의 돈 요구, 숨긴 재산, 전세금, 해외여행 폭로 같은 별개의 사건을 임의로 덧붙이지 않는다.\n" +
       "조건: 관계와 행동이 눈에 보이게 구체적으로 쓰고, 누가 더 잘못했는지 편이 갈려야 한다. " +
       "세대 전체를 비난하지 말고 한 사건으로 좁힌다. 추상적 사회 비평은 금지한다.\n" +
       "금지: 실제 인물·브랜드·사건, 정치, 혐오, 성적 모욕, 범죄 조장, 허위 의료·금융 정보.\n" +
@@ -212,7 +214,7 @@ async function generateRandomTopic(
     operation: "script_topic_generate",
     model: SCRIPT_MODEL,
     usage: response.usage,
-    metadata: { language, visualStyle },
+    metadata: { language, visualStyle, ...seed },
   });
 
   const topic = cleanTopic(response.output_text || "");
@@ -238,7 +240,7 @@ async function callOpenAI(
   const isWebtoon = visualStyle === "webtoon";
   const audienceRole = isWebtoon
     ? "역할: 10~20대가 바로 공감하고 반응할 현실 관계형 웹툰 숏폼 내레이션 작가.\n"
-    : "역할: 50~60대가 바로 이해하고 반응할 생활 막장 숏폼 내레이션 작가.\n";
+    : "역할: 50~60대가 바로 이해하고 반응할 다양한 일상 숏폼 내레이션 작가.\n";
   const audienceRules = isWebtoon
     ? "- 주제에 연령이나 관계가 명시되지 않은 경우에만 학생, 대학생, 사회초년생 등 10~20대가 공감할 맥락으로 보완한다.\n" +
       "- 연애·입시·가족·친구 소재는 주제에 포함되어 있거나 자연스럽게 필요한 경우에만 사용한다. 미성년 인물의 성적 소재는 사용하지 않는다.\n"
@@ -274,7 +276,7 @@ async function callOpenAI(
         "- 갈등 사연일 때만 실제 주변에서 벌어질 법한 익명의 사건 하나로 만든다. 정보·후기·비교 주제를 가상의 가족 갈등으로 바꾸지 않는다.\n" +
         audienceRules +
         ageRule +
-        "- 주제가 갈등형 사연일 때만 뻔뻔한 요구, 편애, 이중잣대, 배신, 숨긴 돈, 뒤늦게 드러난 속셈 중 자연스러운 장치 하나를 쓴다.\n" +
+        "- 갈등형 사연은 주제에 이미 있는 행동과 이해관계로 긴장감을 만든다. 별도의 돈 문제나 배신을 추가하지 않는다.\n" +
         "- 황당하지만 현실에서 충분히 있을 법해야 한다. 사건이나 갈등을 여러 개 섞지 않는다.\n" +
         "구조:\n" +
         "- 갈등 사연: 핵심 행동이나 대사로 시작하고, 관계와 상황, 갈등 확대, 본질이나 반전, 판단 질문 순서로 쓴다.\n" +
@@ -291,9 +293,9 @@ async function callOpenAI(
         "출력: 제목, 번호, 괄호, 장면 지시, 내레이션 표기 없이 대본 본문만.\n\n" +
         `다시 확인할 원문 주제: ${topic}` +
         `\n\n${stylePriorityRule}\n\n${topicPriorityRule}`
-      : "아래 대본을 같은 주제의 생활 막장 이야기로 늘려 다시 쓴다.\n" +
+      : "아래 대본을 같은 주제와 형식을 유지하면서 늘려 다시 쓴다.\n" +
         `분량: ${lengthGuide.prompt}. 실제 발화 시간을 우선한다.\n` +
-        `타깃: ${isWebtoon ? "10~20대의 연애·입시·가족·친구 관계" : "50~60대의 현실 생활 관계"}.\n` +
+        `독자층: ${isWebtoon ? "10~20대" : "50~60대"}. 독자층을 이유로 소재나 관계를 바꾸지 않는다.\n` +
         "반드시 유지할 것: 원문 주제의 핵심 요소, 같은 인물 관계, 같은 사건과 관점, 기존 대본의 유효한 구체 정보.\n" +
         ageRule +
         "반드시 고칠 것: 주장 나열, 추상적 비평, 뉴스 말투, 무난한 교훈, 주제 변경, 모든 문장의 같은 강도.\n" +
