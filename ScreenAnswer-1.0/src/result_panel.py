@@ -30,7 +30,8 @@ class ResultPanel(ttk.LabelFrame):
 
     def refresh(self):
         values = (getattr(self.app, 'request_source', None) or '아직 전송한 텍스트가 없습니다.',
-                  getattr(self.app, 'result_text', '아직 AI 응답이 없습니다.'))
+                  getattr(self.app, 'last', '요청 오류') if getattr(self.app, 'popup_error', False)
+                  else getattr(self.app, 'result_text', '아직 AI 응답이 없습니다.'))
         for index, value in enumerate(values):
             if value != self.displayed[index]:
                 text = self.views[index]

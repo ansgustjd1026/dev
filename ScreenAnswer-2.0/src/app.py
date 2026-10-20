@@ -120,6 +120,7 @@ class App:
         recovery_warnings = []
         self.settings = load_settings(recovery_warnings)
         self.busy = False
+        self.popup_error = False
         self.blinker = Blinker(self.root)
         self.dialog = None
         self.manual_mode = False
@@ -180,6 +181,8 @@ class App:
         context = getattr(self, 'pending_selection', None)
         if final:
             self.pending_selection = None
+        if getattr(self, 'popup_error', False):
+            return
         if not context or not self.settings['bubble_enabled'] or not self.selection.enabled.is_set() or self.settings_visible():
             return
         generation, source, anchor, selected = context
@@ -275,6 +278,9 @@ class App:
         self.tray.hover_pending = False
 
     def begin_tray_hover(self):
+        if getattr(self, 'popup_error', False):
+            self.hide_tray_answer()
+            return
         if getattr(self, 'tray_hover_timer', None) is not None:
             return
         self.tray_hover_started = time.monotonic()
@@ -284,6 +290,9 @@ class App:
 
     def update_tray_hover(self):
         self.tray_hover_timer = None
+        if getattr(self, 'popup_error', False):
+            self.hide_tray_answer()
+            return
         try:
             bounds = icon_bounds(self.tray)
             point = cursor_position()
@@ -323,9 +332,13 @@ class App:
         shown = '#ffc86b' if getattr(self, 'manual_mode', False) else '#ff8484' if getattr(self, 'manual_idle', False) else color if getattr(self, 'settings', {}).get('tray_icon_changes', True) else '#72d7f3'
         self.tray.icon = make_icon(shown)
 
-    def publish(self, text, color):
+    def publish(self, text, color, *, error=None):
         self.last = text
         self.tray.title = tooltip(text)
+        self.popup_error = color == '#ff8484' if error is None else error
+        if self.popup_error:
+            self.hide_near()
+            self.hide_tray_answer()
         self.set_tray_color(color)
 
     def settings_visible(self):
@@ -633,6 +646,7 @@ class App:
         if copy_context:
             self.request_source = None
         clipboard_hwnd = self.root.winfo_id() if copy_context else None
+        self.popup_error = False
         self.result_text = 'AI 응답을 기다리는 중입니다.'
         self.tray.title = 'ScreenAnswer ' + VERSION + ' · ' + ('선택한 텍스트' if text is not None or copy_context else '화면') + '의 AI 응답을 기다리는 중…'
         settings = self.settings.copy()
@@ -1047,21 +1061,29 @@ class App:
 
     def handle_error(self, value):
         self.result_text = '요청 오류\n' + str(value)
-        self.finish_binary(getattr(self, 'settings', {}).get('led_error_count', 3), self.result_text)
+        self.finish_binary(getattr(self, 'settings', {}).get('led_error_count', 3), self.result_text, error=True)
 
     def open_result(self):
         self.open_settings()
 
-    def finish_binary(self, count, label):
+    def finish_binary(self, count, label, *, error=False):
         if getattr(self, 'manual_request', False):
             self.manual_request = False
             self.manual_activity()
-            self.input_status('요청 실패' if label.startswith('요청 오류') else '답변 완료')
+            self.input_status('요청 실패' if error else '답변 완료')
+        self.popup_error = error
         self.hide_near()
-        self.display_selection_answer(label)
+        if error:
+            self.pending_selection = None
+        else:
+            self.display_selection_answer(label)
         self.busy = True
         self.selection.suspended.set()
-        self.publish(label, '#ff8484' if label.startswith(('요청 오류', '판별 불가')) else '#72d7f3')
+        color = '#ff8484' if error or label.startswith('판별 불가') else '#72d7f3'
+        if not error and color == '#ff8484':
+            self.publish(label, color, error=False)  # Uncertainty is a valid AI answer.
+        else:
+            self.publish(label, color)
         def finished(error):
             self.busy = False
             self.refresh_input_pause()

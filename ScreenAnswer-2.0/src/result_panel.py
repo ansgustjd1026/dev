@@ -64,7 +64,8 @@ class ResultPanel(ttk.LabelFrame):
         changed_mode = editing != self.editing
         self.editing = editing
         values = (getattr(self.app, 'manual_draft', '') if editing else getattr(self.app, 'request_source', None) or '아직 전송한 텍스트가 없습니다.',
-                  getattr(self.app, 'result_text', '아직 AI 응답이 없습니다.'))
+                  getattr(self.app, 'last', '요청 오류') if getattr(self.app, 'popup_error', False)
+                  else getattr(self.app, 'result_text', '아직 AI 응답이 없습니다.'))
         for index, value in enumerate(values):
             # Never replace the editor during a refresh: typing, selection,
             # undo and Korean IME composition must remain intact.
